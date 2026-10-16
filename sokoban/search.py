@@ -55,7 +55,7 @@ def bfs(initial_state: SokobanPuzzle) -> SearchResult:
                 break
             frontier.append(child)
             frontier_states.add(state)
-        maximum = max(maximum, len(frontier))
+            maximum = max(maximum, len(frontier))
         if solution is not None:
             break
     elapsed = perf_counter() - started

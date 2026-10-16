@@ -36,6 +36,14 @@ class SokobanPuzzle:
     with a layout is intended for generating successor states.
     """
 
+    __slots__ = ("layout", "player", "boxes")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Allow each state field to be initialized once, then keep it immutable."""
+        if name not in self.__slots__ or hasattr(self, name):
+            raise AttributeError(f"{type(self).__name__} attribute {name!r} is immutable")
+        object.__setattr__(self, name, value)
+
     def __init__(self, lines: Iterable[str] | None = None, *, layout: BoardLayout | None = None,
                  player: Position | None = None, boxes: Iterable[Position] = ()) -> None:
         """Create a validated board state from text or internal static data."""
@@ -88,7 +96,11 @@ class SokobanPuzzle:
             raise ValueError(f"A level must contain exactly one player; found {len(players)}")
         if len(boxes) != len(targets):
             raise ValueError(f"Level has {len(boxes)} boxes and {len(targets)} targets")
-        return BoardLayout(rows, width, len(rows), frozenset(walls), frozenset(targets)), players[0], frozenset(boxes)
+        static_rows = tuple(
+            "".join(WALL if symbol == WALL else EMPTY for symbol in row)
+            for row in rows
+        )
+        return BoardLayout(static_rows, width, len(rows), frozenset(walls), frozenset(targets)), players[0], frozenset(boxes)
 
     @classmethod
     def from_lines(cls, lines: Iterable[str]) -> "SokobanPuzzle":
@@ -146,7 +158,11 @@ class SokobanPuzzle:
 
     def __str__(self) -> str:
         """Render the board with the required Sokoban symbols."""
-        board = [list(row) for row in self.layout.rows]
+        board = [
+            [WALL if (r, c) in self.layout.walls else EMPTY
+             for c in range(self.layout.width)]
+            for r in range(self.layout.height)
+        ]
         for r, c in self.layout.targets:
             board[r][c] = TARGET
         for r, c in self.boxes:

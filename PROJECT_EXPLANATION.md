@@ -152,7 +152,7 @@ ACTIONS = ((UP, (-1, 0)), (DOWN, (1, 0)), (LEFT, (0, -1)), (RIGHT, (0, 1)))
 ```python
 @dataclass(frozen=True)
 class BoardLayout:
-    rows: tuple[str, ...]            # Original text rows
+    rows: tuple[str, ...]            # Normalized static rows containing walls and floor
     width: int                        # Number of columns
     height: int                       # Number of rows
     walls: frozenset[Position]        # Set of wall positions
@@ -241,7 +241,7 @@ Two states are equal if they share the same board layout, player position, and b
 
 #### `__str__()` — Board Rendering
 
-Reconstructs the full text representation of the board by overlaying the current player and box positions onto the static layout, using composite symbols (`.` for player-on-target, `*` for box-on-target).
+Reconstructs the board from static walls and floor, then overlays targets and the current player and box positions, using composite symbols (`.` for player-on-target, `*` for box-on-target). A previous version copied the original text rows and left stale player or box characters behind after moves; rebuilding from static cells fixes that ghost-symbol bug and makes successor states round-trip through the text parser.
 
 ---
 
@@ -573,11 +573,11 @@ Initial state:              Step 0 (root node)
 
 BFS explores 11 nodes, generates 35 children.
 
-Solution found: UP → LEFT → LEFT → DOWN
+Solution found: UP → LEFT → LEFT → LEFT
   Step 1 (UP):    Player moves (2,5) → (1,5)
   Step 2 (LEFT):  Player moves (1,5) → (1,4)
   Step 3 (LEFT):  Player pushes box: Player (1,4)→(1,3), Box (1,3)→(1,2)
-  Step 4 (DOWN):  Player pushes box: Player (1,3)→(1,2), Box (1,2)→(1,1) ← ON TARGET!
+  Step 4 (LEFT):  Player pushes box: Player (1,3)→(1,2), Box (1,2)→(1,1) ← ON TARGET!
 
 Final state:
   OOOOOOOO

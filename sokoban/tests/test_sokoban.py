@@ -16,6 +16,27 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(state.isGoal())
         self.assertEqual(hash(state), hash(SokobanPuzzle.from_lines(str(state).splitlines())))
 
+    def test_str_round_trip_on_successor(self):
+        """__str__ must produce a valid, parseable board on successor states."""
+        state = SokobanPuzzle.from_lines(["OOOOOO", "O R  O", "O B  O", "O S  O", "OOOOOO"])
+        after = dict(state.successorFunction())["DOWN"]
+        round_tripped = SokobanPuzzle.from_lines(str(after).splitlines())
+        self.assertEqual(round_tripped, after)
+        text = str(after)
+        self.assertEqual(text.count("R"), 1)
+        self.assertEqual(text.count("B"), 0)
+        self.assertEqual(text.count("*"), 1)
+
+    def test_state_immutability(self):
+        """SokobanPuzzle attributes should not be reassignable."""
+        state = SokobanPuzzle.from_lines(["OOOOO", "ORBSO", "OOOOO"])
+        with self.assertRaises(AttributeError):
+            state.boxes = frozenset()
+        with self.assertRaises(AttributeError):
+            state.player = (0, 0)
+        with self.assertRaises(AttributeError):
+            state.layout = None
+
     def test_moves_pushes_and_blocking(self):
         state = SokobanPuzzle.from_lines(["OOOOOO", "ORBS O", "OOOOOO"])
         moves = dict(state.successorFunction())
@@ -59,6 +80,29 @@ class ModelTests(unittest.TestCase):
     def test_validation(self):
         with self.assertRaisesRegex(ValueError, "exactly one player"):
             SokobanPuzzle.from_lines(["OOO", "O O", "OOO"])
+
+    def test_bfs_unsolvable_level(self):
+        """BFS should return found=False on an unsolvable level without crashing."""
+        state = SokobanPuzzle.from_lines(["OOOOO", "OB  O", "OOR O", "O  SO", "OOOOO"])
+        result = bfs(state)
+        self.assertFalse(result.found)
+        self.assertIsNone(result.cost)
+        self.assertEqual(result.actions, [])
+        self.assertEqual(result.path, [])
+
+    def test_bfs_already_solved(self):
+        """BFS on an already-solved puzzle should return cost 0."""
+        state = SokobanPuzzle.from_lines(["OOOOO", "OR* O", "OOOOO"])
+        result = bfs(state)
+        self.assertTrue(result.found)
+        self.assertEqual(result.cost, 0)
+        self.assertEqual(result.actions, [])
+        self.assertEqual(len(result.path), 1)
+
+    def test_multiple_players_rejected(self):
+        """A level with more than one player should be rejected."""
+        with self.assertRaisesRegex(ValueError, "exactly one player"):
+            SokobanPuzzle.from_lines(["OOOOO", "ORBSO", "OROOO"])
 
     def test_bundled_levels_solve_and_replay(self):
         root = Path(__file__).parents[1] / "levels"

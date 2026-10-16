@@ -37,7 +37,8 @@ class SokobanGUI:
         self.solvers: dict[str, Solver] = {"BFS": bfs}
         self.results: dict[str, SearchResult] = {}
         self.level_index = 0
-        self.result_queue: queue.Queue[tuple[str, SearchResult]] = queue.Queue()
+        self.result_queue: queue.Queue[tuple[str, SearchResult, int]] = queue.Queue()
+        self._solve_generation = 0
         self.solving = False
         self.playing = False
         self.step = 0
@@ -45,9 +46,10 @@ class SokobanGUI:
         self.last_step_time = 0
         self.message = "Select Solve to run BFS."
 
-    def _solve_in_background(self, name: str, solver: Solver, state: SokobanPuzzle) -> None:
+    def _solve_in_background(self, name: str, solver: Solver, state: SokobanPuzzle,
+                             generation: int) -> None:
         """Run a solver away from pygame's event thread and post its result."""
-        self.result_queue.put((name, solver(state)))
+        self.result_queue.put((name, solver(state), generation))
 
     def _current_result(self) -> SearchResult | None:
         """Return the latest BFS result for the selected level."""
@@ -59,6 +61,8 @@ class SokobanGUI:
         self.results.clear()
         self.step = 0
         self.playing = False
+        self.solving = False
+        self._solve_generation += 1
         self.message = "Select Solve to run BFS."
 
     def run(self, initial_level: int = 1) -> None:
@@ -115,7 +119,9 @@ class SokobanGUI:
                         elif 438 <= mx < 520:
                             self.step, self.playing = 0, False
             while not self.result_queue.empty():
-                name, result = self.result_queue.get()
+                name, result, generation = self.result_queue.get()
+                if generation != self._solve_generation:
+                    continue
                 self.results[name] = result
                 self.solving = False
                 self.step = 0
@@ -164,9 +170,11 @@ class SokobanGUI:
         self.solving = True
         self.results.clear()
         self.message = "Solving..."
+        self._solve_generation += 1
+        generation = self._solve_generation
         for name, solver in self.solvers.items():
             worker = threading.Thread(target=self._solve_in_background,
-                                      args=(name, solver, self.levels[self.level_index]), daemon=True)
+                                      args=(name, solver, self.levels[self.level_index], generation), daemon=True)
             worker.start()
 
     def _step_forward(self) -> None:
