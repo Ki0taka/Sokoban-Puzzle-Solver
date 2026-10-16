@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import queue
+import sys
 import threading
 from pathlib import Path
 from typing import Callable
@@ -10,6 +11,19 @@ from .search import SearchResult, bfs
 from .sokoban_puzzle import SokobanPuzzle
 
 Solver = Callable[[SokobanPuzzle], SearchResult]
+
+
+class _FreeTypeFontAdapter:
+    """Give Pygame's freetype renderer the small font API used by this GUI."""
+
+    def __init__(self, freetype: object, size: int) -> None:
+        """Create a freetype font using its bundled default face."""
+        self._font = freetype.Font(None, size)
+
+    def render(self, text: str, antialias: bool, color: tuple[int, int, int]) -> object:
+        """Render text and return only the surface, matching pygame.font.Font."""
+        surface, _ = self._font.render(text, color)
+        return surface
 
 
 class SokobanGUI:
@@ -58,8 +72,7 @@ class SokobanGUI:
         screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
         pygame.display.set_caption("Sokoban — Problem Solving")
         clock = pygame.time.Clock()
-        font = pygame.font.SysFont("arial", 18)
-        small = pygame.font.SysFont("arial", 15)
+        font, small = self._create_fonts(pygame)
         self._change_level(max(0, min(4, initial_level - 1)))
         running = True
         while running:
@@ -124,6 +137,27 @@ class SokobanGUI:
             pygame.display.flip()
             clock.tick(60)
         pygame.quit()
+
+    @staticmethod
+    def _create_fonts(pygame: object) -> tuple[object, object]:
+        """Create GUI fonts, falling back to freetype if pygame.font is unavailable."""
+        # Pygame 2.6.1 has a pygame.font/sysfont circular import under Python 3.14.
+        if sys.version_info >= (3, 14) and pygame.version.vernum <= (2, 6, 1):
+            import pygame._freetype as freetype
+
+            freetype.init()
+            return _FreeTypeFontAdapter(freetype, 18), _FreeTypeFontAdapter(freetype, 15)
+        try:
+            pygame_font = pygame.font
+            pygame_font.init()
+            return pygame_font.SysFont("arial", 18), pygame_font.SysFont("arial", 15)
+        except (ImportError, NotImplementedError):
+            # Pygame 2.6.1's pygame.font module can fail to import on Python 3.14
+            # because pygame.sysfont imports Font before pygame.font defines it.
+            import pygame._freetype as freetype
+
+            freetype.init()
+            return _FreeTypeFontAdapter(freetype, 18), _FreeTypeFontAdapter(freetype, 15)
 
     def _start_solve(self) -> None:
         """Launch each registered solver in a worker thread."""
