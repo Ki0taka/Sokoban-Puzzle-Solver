@@ -1,72 +1,124 @@
-# Sokoban Puzzle — Part 1
+# Sokoban Puzzle Solver
 
-Python 3.10+ implementation of the modeling and BFS parts of the USTHB Visual
-Computing project. It uses only the Python standard library and `pygame` for the
-graphical interface.
+A Python implementation of the Sokoban modeling and search project for the
+USTHB Master 1 Visual Computing course. It includes a validated puzzle model,
+an optimal Breadth-First Search (BFS) solver, five example levels, and a Pygame
+interface for viewing solutions step by step.
 
-## Run
+> **Requirements:** Python 3.10 or later. The graphical interface requires
+> Pygame; the puzzle model, BFS solver, and CLI use only the standard library.
 
-```sh
-pip install pygame
+## Features
+
+- Immutable, hashable puzzle states with shared static board layouts.
+- Legal movement and box-pushing rules, including player and box target cells.
+- Graph-search BFS with path reconstruction and search statistics.
+- Responsive Pygame UI with background solving and solution playback.
+- Five text-based example levels and automated tests.
+- Solver registry designed to support future algorithms such as DFS, UCS, and A*.
+
+## Quick start
+
+Clone the repository, enter its directory, then install Pygame and launch the
+interface:
+
+```bash
+python -m pip install pygame
 python main.py
 ```
 
-The GUI supports levels 1–5, Solve, Play/Pause, Step forward/back, Reset, and
-speed controls. Keyboard shortcuts are shown in the window: `1`–`5` choose a
-level, `S` solves, `Space` plays/pauses, arrows or `N`/`B` step, `R` resets,
-and `+`/`-` adjust playback speed. Search runs on a worker thread so the window
-continues to respond.
+Select a level with the on-screen buttons or keys `1`–`5`, then choose **Solve**.
+The interface shows the board, solution path, current action, cost, and BFS
+statistics.
 
-Console mode prints each encoded level and solves all five:
+### Controls
 
-```sh
+| Input | Action |
+| --- | --- |
+| `1`–`5` | Select a level |
+| `S` | Solve with BFS |
+| `Space` | Play or pause the solution animation |
+| `→` / `N` | Step forward |
+| `←` / `B` | Step backward |
+| `R` | Reset playback |
+| `+` / `-` | Increase or decrease playback speed |
+
+## Console mode
+
+Print and solve all five levels without opening the GUI:
+
+```bash
 python main.py --cli
 ```
 
-Run the test suite with:
+Choose the level shown when the GUI starts:
 
-```sh
+```bash
+python main.py --level 3
+```
+
+## Tests
+
+Run the unit tests from the project root:
+
+```bash
 python -m unittest discover -s sokoban/tests -v
 ```
 
-## Design
+The tests cover parsing and rendering, goal recognition, movement and push
+constraints, state hashing, node path reconstruction, BFS optimality on a small
+board, and independent replay of the solutions for all bundled levels.
 
-`SokobanPuzzle` stores the immutable board layout (walls and targets) once and
-shares it among successor states. Each state contains only a player coordinate
-and a `frozenset` of box coordinates; its hash and equality support graph search.
-The text encoding is `R` player, `O` wall, space floor, `S` target, `B` box,
-`.` player on target, and `*` box on target. Ragged input rows are padded with
-walls. The loader rejects invalid player and box/target counts.
+## Project structure
 
-`Node` contains a state, its parent, its generating action, and unit path cost.
-`search.bfs` is graph-search BFS with a FIFO queue, an explored set, a frontier
-membership set, and goal testing when a new child is generated. It returns a
-`SearchResult` containing the solution node, actions, states, and performance
-counters.
+```text
+main.py                      Application entry point
+sokoban/
+  sokoban_puzzle.py           Puzzle state, validation, and transitions
+  node.py                     Search-tree node and path reconstruction
+  search.py                   BFS and SearchResult
+  gui.py                      Pygame interface and animation
+  main.py                     CLI and GUI launcher
+  levels/                     Five text-based example levels
+  tests/                      Unit and solver tests
+PROJECT_WALKTHROUGH.md        Detailed implementation guide
+```
 
-To add a search algorithm, implement a function accepting a `SokobanPuzzle` and
-returning `SearchResult`, then register it in `SokobanGUI.solvers`. The GUI uses
-the same result fields for playback and comparison.
+## Design overview
 
-## Bundled levels
+`SokobanPuzzle` separates the immutable layout (walls and targets) from the
+dynamic state (player position and a `frozenset` of box positions). Successors
+share the same layout, create new dynamic states, and can be stored in sets for
+graph search.
 
-The PDF's Figure 4 provides raster drawings rather than text grids or explicit
-cell coordinates. The maps in `sokoban/levels/` are careful grid reconstructions
-of the depicted walls and objects, but a few cell boundaries are ambiguous at
-the source image resolution. Each reconstruction is validated for one player
-and equal box/target counts, and is solvable by BFS.
+BFS uses a FIFO queue, an explored set, and a set for fast frontier membership
+checks. Since each action costs one move, BFS returns a shortest solution. The
+`SearchResult` reports the solution node, actions, state path, cost, expanded
+and generated node counts, maximum frontier size, and elapsed time.
 
-The table below records a local run of the bundled BFS implementation. Time is
-machine-dependent; counts are the search's generated successor attempts
-(including duplicates) and expanded nodes.
+To add a solver, implement a function accepting a `SokobanPuzzle` and returning
+a `SearchResult`, then register it in `SokobanGUI.solvers`. The existing model
+and GUI are shared across algorithms.
 
-| Level | Solution cost | Expanded | Generated | Search time (s) |
-|---|---:|---:|---:|---:|
+## BFS results
+
+These are one local run of the bundled levels. Node counts follow this
+implementation's convention: generated includes duplicate successor attempts.
+Search times vary by machine.
+
+| Level | Solution cost | Expanded | Generated | Time (seconds) |
+| --- | ---: | ---: | ---: | ---: |
 | Example 1 | 4 | 11 | 35 | 0.0003 |
 | Example 2 | 14 | 171 | 548 | 0.0047 |
 | Example 3 | 19 | 3,713 | 10,606 | 0.0944 |
 | Example 4 | 20 | 3,197 | 10,172 | 0.0998 |
 | Example 5 | 20 | 21,090 | 61,394 | 0.6402 |
 
-All five complete quickly with plain BFS on the measured run. Timing values are
-rounded from one invocation and will vary across machines.
+## Example levels
+
+The five supplied examples are based on Figure 4 of the course project PDF.
+That figure is a raster drawing without explicit grid coordinates, so the text
+maps are careful reconstructions and some cell boundaries are necessarily
+estimated. The loader checks that each map has exactly one player and equal
+numbers of boxes and targets; the test suite confirms that every bundled map
+has a BFS solution.
