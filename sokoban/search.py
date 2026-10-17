@@ -9,7 +9,7 @@ from .sokoban_puzzle import SokobanPuzzle
 
 @dataclass
 class SearchResult:
-    """Outcome and performance counters for one search run."""
+    """This will show the outcome and performance counters for one search run."""
 
     solution: Node | None
     actions: list[str]
@@ -27,7 +27,7 @@ class SearchResult:
 
 
 def bfs(initial_state: SokobanPuzzle) -> SearchResult:
-    """Find an optimal solution using graph-search breadth-first search."""
+    """This is the most cruacial function that has to find an optimal solution using graph-search breadth-first search."""
     started = perf_counter()
     root = Node(initial_state)
     frontier: deque[Node] = deque([root])
