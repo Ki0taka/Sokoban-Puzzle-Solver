@@ -19,13 +19,18 @@ interface for viewing solutions step by step.
 
 ## Quick start
 
-Clone the repository, enter its directory, then install Pygame and launch the
-interface:
+Clone the repository, enter its directory, create a virtual environment, then
+install the GUI dependency and launch the interface:
 
 ```bash
-python -m pip install pygame
+python -m venv .venv
+# Activate it: Windows: .venv\Scripts\activate  |  macOS/Linux: source .venv/bin/activate
+python -m pip install -r requirements.txt
 python main.py
 ```
+
+The BFS solver, console mode, and tests use only the Python standard library;
+Pygame is only needed for the graphical interface.
 
 Select a level with the on-screen buttons or keys `1`–`5`, then choose **Solve**.
 The interface shows the board, solution path, current action, cost, and BFS
