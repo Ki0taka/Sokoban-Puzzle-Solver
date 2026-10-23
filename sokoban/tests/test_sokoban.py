@@ -44,7 +44,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(moves["RIGHT"].player, (1, 2))
         self.assertEqual(moves["RIGHT"].boxes, frozenset({(1, 3)}))
         self.assertNotIn("UP", moves)
-        blocked = SokobanPuzzle.from_lines(["OOOOOO", "ORBBSS", "OOOOOO"])
+        blocked = SokobanPuzzle.from_lines(["OOOOOOO", "ORBBSSO", "OOOOOOO"])
         self.assertNotIn("RIGHT", dict(blocked.successorFunction()))
 
     def test_plain_move_no_pull_and_push_blocked_by_wall(self):
@@ -54,7 +54,7 @@ class ModelTests(unittest.TestCase):
         self.assertNotIn("LEFT", successors)  # wall blocks movement
         # Moving away never changes a box unless the player steps into it.
         self.assertEqual(successors["RIGHT"].boxes, state.boxes)
-        against_wall = SokobanPuzzle.from_lines(["OOOOOO", "ORBOOO", "OOSOOO"])
+        against_wall = SokobanPuzzle.from_lines(["OOOOOOO", "ORBOOOO", "OSOOOOO", "OOOOOOO"])
         self.assertNotIn("RIGHT", dict(against_wall.successorFunction()))
 
     def test_player_and_box_on_target_transitions(self):
@@ -103,6 +103,40 @@ class ModelTests(unittest.TestCase):
         """A level with more than one player should be rejected."""
         with self.assertRaisesRegex(ValueError, "exactly one player"):
             SokobanPuzzle.from_lines(["OOOOO", "ORBSO", "OROOO"])
+
+    def test_bundled_levels_are_enclosed(self):
+        """Reachable floor on every bundled board stays inside wall boundaries."""
+        root = Path(__file__).parents[1] / "levels"
+        for index in range(1, 6):
+            state = SokobanPuzzle.from_file(root / f"level{index}.txt")
+            for row in range(state.layout.height):
+                for column in range(state.layout.width):
+                    if row in (0, state.layout.height - 1) or column in (0, state.layout.width - 1):
+                        self.assertIn((row, column), state.layout.walls)
+
+    def test_bundled_level_encodings_match_the_figure_reconstruction(self):
+        """Guard the five explicitly documented text reconstructions."""
+        root = Path(__file__).parents[1] / "levels"
+        expected = {
+            1: ["OOOOOO", "OS B O", "O OR O", "O    O", "O    O", "OOOOOO"],
+            2: ["OOOOOOOOO", "O       O", "O       O", "O  OOO  O", "O    O. O",
+                "O     O O", "O  B  O O", "O     O O", "OOOOOOOOO"],
+            3: ["OOOOOOOO", "O   O  O", "O  BR  O", "O      O", "OOOOO BO",
+                "OOOOO SO", "OOOOO SO", "OOOOOOOO"],
+            4: ["OOOOOOOOO", "OO  OOOOO", "OO  OOOOO", "OO *   OO", "OOBOB  OO",
+                "O SRS  OO", "O      OO", "OO  OOOOO", "OO  OOOOO", "OOOOOOOOO"],
+            5: ["OOOOOOOOOO", "OOO S  OOO", "O        O", "O B R B  O", "O      S O",
+                "OOO    OOO", "OOOB   OOO", "OOO  S OOO", "OOO    OOO", "OOOOOOOOOO"],
+        }
+        for index, lines in expected.items():
+            self.assertEqual((root / f"level{index}.txt").read_text(encoding="utf-8").splitlines(), lines)
+            state = SokobanPuzzle.from_lines(lines)
+            self.assertEqual(len(state.boxes), len(state.layout.targets))
+
+    def test_open_maze_rejected_as_not_enclosed(self):
+        """Reachable floor touching the outer grid edge is an invalid level."""
+        with self.assertRaisesRegex(ValueError, "level is not enclosed"):
+            SokobanPuzzle.from_lines(["R"])
 
     def test_bundled_levels_solve_and_replay(self):
         root = Path(__file__).parents[1] / "levels"

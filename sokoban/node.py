@@ -1,6 +1,7 @@
 """Search-tree node for unit-cost search algorithms."""
 
 from __future__ import annotations
+from typing import Callable
 from typing import Optional
 from .sokoban_puzzle import SokobanPuzzle
 
@@ -15,6 +16,12 @@ class Node:
         self.parent = parent
         self.action = action
         self.g = (parent.g + 1 if parent is not None else 0) if g is None else g
+        self.f: int | float | None = None
+
+    def setF(self, heuristic: Callable[[SokobanPuzzle], int | float]) -> int | float:
+        """Set and return A*'s evaluation value ``g + h(state)``."""
+        self.f = self.g + heuristic(self.state)
+        return self.f
 
     def getPath(self) -> list[SokobanPuzzle]:
         """Return states from the root node through this node."""

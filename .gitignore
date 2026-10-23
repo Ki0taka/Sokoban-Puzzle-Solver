@@ -8,6 +8,8 @@ __pycache__/
 htmlcov/
 *.pdf
 *.md
+!results.md
+!LEVEL_RECONSTRUCTIONS.md
 
 # Virtual environments
 .venv/

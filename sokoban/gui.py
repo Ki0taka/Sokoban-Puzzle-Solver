@@ -4,13 +4,26 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .search import SearchResult, bfs
+from .heuristics import HEURISTICS
+from .search import SOLVERS, SearchResult
 from .sokoban_puzzle import SokobanPuzzle
 
 Solver = Callable[[SokobanPuzzle], SearchResult]
+
+
+@dataclass(frozen=True)
+class UIButton:
+    """A clickable GUI control described by its rectangle and action id."""
+
+    rect: object
+    label: str
+    action: str
+    selected: bool = False
+    primary: bool = False
 
 
 class _FreeTypeFontAdapter:
@@ -34,12 +47,17 @@ class SokobanGUI:
         self.level_dir = Path(__file__).parent / "levels"
         self.levels = [SokobanPuzzle.from_file(self.level_dir / f"level{i}.txt") for i in range(1, 6)]
         self.level_names = [f"Example {i}" for i in range(1, 6)]
-        self.solvers: dict[str, Solver] = {"BFS": bfs}
-        self.results: dict[str, SearchResult] = {}
+        self.solvers = dict(SOLVERS)
+        self.heuristics = dict(HEURISTICS)
+        self.selected_algorithm = "BFS"
+        self.selected_heuristic = "h1"
+        self.results: dict[tuple[int, str], SearchResult] = {}
+        self.errors: dict[tuple[int, str], str] = {}
+        self.solving_keys: set[tuple[int, str]] = set()
+        self._request_generations: dict[tuple[int, str], int] = {}
+        self._next_generation = 0
         self.level_index = 0
-        self.result_queue: queue.Queue[tuple[str, SearchResult, int]] = queue.Queue()
-        self._solve_generation = 0
-        self.solving = False
+        self.result_queue: queue.Queue[tuple[int, str, int, SearchResult | None, str | None]] = queue.Queue()
         self.playing = False
         self.step = 0
         self.delay_ms = 450
@@ -48,23 +66,35 @@ class SokobanGUI:
         self._font_cache: dict[tuple[int, bool], object] = {}
         self._freetype_font_keys: set[tuple[int, bool]] = set()
 
-    def _solve_in_background(self, name: str, solver: Solver, state: SokobanPuzzle,
-                             generation: int) -> None:
-        """Run a solver away from pygame's event thread and post its result."""
-        self.result_queue.put((name, solver(state), generation))
+    def _selected_key(self) -> str:
+        """Return the registry key selected by the algorithm and heuristic controls."""
+        if self.selected_algorithm == "BFS":
+            return "BFS"
+        return f"A* ({self.selected_heuristic})"
+
+    def _solve_in_background(self, level_index: int, key: str, solver: Solver,
+                             state: SokobanPuzzle, generation: int) -> None:
+        """Run one solver away from the event thread and queue its result or error."""
+        try:
+            result = solver(state)
+            self.result_queue.put((level_index, key, generation, result, None))
+        except Exception as error:
+            self.result_queue.put((level_index, key, generation, None,
+                                   f"{type(error).__name__}: {error}"))
 
     def _current_result(self) -> SearchResult | None:
         """Return the latest BFS result for the selected level."""
-        return self.results.get("BFS")
+        return self.results.get((self.level_index, self._selected_key()))
+
+    def _current_error(self) -> str | None:
+        """Return the selected solver's error message, if its run failed."""
+        return self.errors.get((self.level_index, self._selected_key()))
 
     def _change_level(self, index: int) -> None:
         """Select a level and clear playback state."""
         self.level_index = index
-        self.results.clear()
         self.step = 0
         self.playing = False
-        self.solving = False
-        self._solve_generation += 1
         self.message = "Select Solve to run BFS."
 
     def run(self, initial_level: int = 1) -> None:
@@ -83,6 +113,7 @@ class SokobanGUI:
         running = True
         while running:
             now = pygame.time.get_ticks()
+            buttons = self._layout_buttons(pygame, screen.get_width())
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -91,10 +122,16 @@ class SokobanGUI:
                 elif event.type == pygame.KEYDOWN:
                     if pygame.K_1 <= event.key <= pygame.K_5:
                         self._change_level(event.key - pygame.K_1)
-                    elif event.key == pygame.K_s and not self.solving:
+                    elif event.key == pygame.K_a:
+                        self._set_algorithm("A*" if self.selected_algorithm == "BFS" else "BFS")
+                    elif event.key == pygame.K_h:
+                        self._cycle_heuristic()
+                    elif event.key == pygame.K_s:
                         self._start_solve()
+                    elif event.key == pygame.K_c:
+                        self._start_solve(list(self.solvers))
                     elif event.key == pygame.K_SPACE and self._current_result() and self._current_result().found:
-                        self.playing = not self.playing
+                        self._toggle_play()
                     elif event.key in (pygame.K_RIGHT, pygame.K_n):
                         self._step_forward()
                     elif event.key in (pygame.K_LEFT, pygame.K_b):
@@ -106,28 +143,29 @@ class SokobanGUI:
                     elif event.key in (pygame.K_MINUS, pygame.K_UNDERSCORE):
                         self.delay_ms = min(1500, self.delay_ms + 60)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    mx, my = event.pos
-                    if 64 <= my < 108 and 18 <= mx < 18 + 5 * 86:
-                        self._change_level(min(4, (mx - 18) // 86))
-                    elif 112 <= my < 162:
-                        if 18 <= mx < 120 and not self.solving:
-                            self._start_solve()
-                        elif 128 <= mx < 230:
-                            self.playing = not self.playing
-                        elif 238 <= mx < 330:
-                            self._step_forward()
-                        elif 338 <= mx < 430:
-                            self.step = max(0, self.step - 1)
-                        elif 438 <= mx < 520:
-                            self.step, self.playing = 0, False
-            while not self.result_queue.empty():
-                name, result, generation = self.result_queue.get()
-                if generation != self._solve_generation:
+                    for button in buttons:
+                        if button.rect.collidepoint(event.pos):
+                            self._activate_button(button.action)
+                            break
+            while True:
+                try:
+                    level_index, key, generation, result, error = self.result_queue.get_nowait()
+                except queue.Empty:
+                    break
+                cache_key = (level_index, key)
+                if self._request_generations.get(cache_key) != generation:
                     continue
-                self.results[name] = result
-                self.solving = False
-                self.step = 0
-                self.message = "Solution found." if result.found else "No solution found for this level."
+                self.solving_keys.discard(cache_key)
+                if error is not None:
+                    self.errors[cache_key] = error
+                    self.results.pop(cache_key, None)
+                elif result is not None:
+                    self.results[cache_key] = result
+                    self.errors.pop(cache_key, None)
+                if level_index == self.level_index and key == self._selected_key():
+                    self.step = 0
+                    self.playing = False
+                    self.message = error or ("Solution found." if result and result.found else "No solution found.")
             result = self._current_result()
             if self.playing and result and result.found and now - self.last_step_time >= self.delay_ms:
                 if self.step < len(result.path) - 1:
@@ -137,8 +175,7 @@ class SokobanGUI:
                     self.playing = False
 
             screen.fill((17, 24, 39))
-            self._draw_controls(pygame, screen, title_font, font, small,
-                                self.level_index, self.playing, self.solving)
+            self._draw_controls(pygame, screen, title_font, font, small, buttons)
             state = result.path[self.step] if result and result.found else self.levels[self.level_index]
             panel_x = min(810, screen.get_width() - 310)
             self._draw_board(pygame, screen, state, panel_x, screen.get_height())
@@ -146,6 +183,84 @@ class SokobanGUI:
             pygame.display.flip()
             clock.tick(60)
         pygame.quit()
+
+    def _layout_buttons(self, pygame: object, width: int) -> list[UIButton]:
+        """Build clickable controls for the current window width and selection."""
+        buttons = [UIButton(pygame.Rect(18 + index * 86, 67, 78, 36),
+                            f"LEVEL {index + 1}", f"level:{index}", index == self.level_index)
+                   for index in range(5)]
+        buttons.extend([
+            UIButton(pygame.Rect(540, 67, 72, 36), "BFS", "algorithm:BFS",
+                     self.selected_algorithm == "BFS"),
+            UIButton(pygame.Rect(618, 67, 72, 36), "A*", "algorithm:A*",
+                     self.selected_algorithm == "A*"),
+        ])
+        if self.selected_algorithm == "A*":
+            for index, name in enumerate(("h1", "h2", "h3")):
+                buttons.append(UIButton(pygame.Rect(704 + index * 48, 67, 42, 36),
+                                        name, f"heuristic:{name}", self.selected_heuristic == name))
+        buttons.extend([
+            UIButton(pygame.Rect(18, 116, 102, 42), "SOLVE  S", "solve", primary=True),
+            UIButton(pygame.Rect(128, 116, 102, 42),
+                     "PAUSE  SPACE" if self.playing else "PLAY  SPACE", "play", self.playing),
+            UIButton(pygame.Rect(238, 116, 92, 42), "STEP  N", "forward"),
+            UIButton(pygame.Rect(338, 116, 92, 42), "BACK  B", "back"),
+            UIButton(pygame.Rect(438, 116, 82, 42), "RESET  R", "reset"),
+            UIButton(pygame.Rect(742, 116, 116, 42), "COMPARE  C", "compare"),
+        ])
+        return buttons
+
+    def _activate_button(self, action: str) -> None:
+        """Dispatch a button id to the matching GUI action."""
+        if action.startswith("level:"):
+            self._change_level(int(action.split(":", 1)[1]))
+        elif action.startswith("algorithm:"):
+            self._set_algorithm(action.split(":", 1)[1])
+        elif action.startswith("heuristic:"):
+            self._set_heuristic(action.split(":", 1)[1])
+        elif action == "solve":
+            self._start_solve()
+        elif action == "compare":
+            self._start_solve(list(self.solvers))
+        elif action == "play":
+            self._toggle_play()
+        elif action == "forward":
+            self._step_forward()
+        elif action == "back":
+            self.step = max(0, self.step - 1)
+        elif action == "reset":
+            self.step, self.playing = 0, False
+
+    def _set_algorithm(self, algorithm: str) -> None:
+        """Select BFS or A* and reset playback to that algorithm's cached path."""
+        if algorithm not in ("BFS", "A*") or algorithm == self.selected_algorithm:
+            return
+        self.selected_algorithm = algorithm
+        self.step = 0
+        self.playing = False
+
+    def _set_heuristic(self, name: str) -> None:
+        """Select one A* heuristic and reset playback to its cached path."""
+        if name not in self.heuristics or name == self.selected_heuristic:
+            return
+        self.selected_heuristic = name
+        self.step = 0
+        self.playing = False
+
+    def _cycle_heuristic(self) -> None:
+        """Advance to the next registered heuristic."""
+        names = list(self.heuristics)
+        next_index = (names.index(self.selected_heuristic) + 1) % len(names)
+        self._set_heuristic(names[next_index])
+
+    def _toggle_play(self) -> None:
+        """Toggle playback, restarting from the initial state when at the end."""
+        result = self._current_result()
+        if result is None or not result.found:
+            return
+        if not self.playing and self.step >= len(result.path) - 1:
+            self.step = 0
+        self.playing = not self.playing
 
     @staticmethod
     def _create_fonts(pygame: object) -> tuple[object, object, object]:
@@ -171,16 +286,26 @@ class SokobanGUI:
             return (_FreeTypeFontAdapter(freetype, 27), _FreeTypeFontAdapter(freetype, 17),
                     _FreeTypeFontAdapter(freetype, 14))
 
-    def _start_solve(self) -> None:
-        """Launch each registered solver in a worker thread."""
-        self.solving = True
-        self.results.clear()
+    def _start_solve(self, keys: list[str] | None = None) -> None:
+        """Run the selected solver or a requested set of solvers in workers."""
+        level_index = self.level_index
+        keys = keys or [self._selected_key()]
         self.message = "Solving..."
-        self._solve_generation += 1
-        generation = self._solve_generation
-        for name, solver in self.solvers.items():
-            worker = threading.Thread(target=self._solve_in_background,
-                                      args=(name, solver, self.levels[self.level_index], generation), daemon=True)
+        self.step = 0
+        self.playing = False
+        for key in keys:
+            solver = self.solvers[key]
+            cache_key = (level_index, key)
+            self._next_generation += 1
+            generation = self._next_generation
+            self._request_generations[cache_key] = generation
+            self.solving_keys.add(cache_key)
+            self.errors.pop(cache_key, None)
+            worker = threading.Thread(
+                target=self._solve_in_background,
+                args=(level_index, key, solver, self.levels[level_index], generation),
+                daemon=True,
+            )
             worker.start()
 
     def _step_forward(self) -> None:
@@ -190,38 +315,31 @@ class SokobanGUI:
             self.step = min(len(result.path) - 1, self.step + 1)
 
     def _draw_controls(self, pygame: object, screen: object, title_font: object,
-                       font: object, small: object, selected_level: int,
-                       playing: bool, solving: bool) -> None:
-        """Draw the title, level selector, and playback control bar."""
+                       font: object, small: object, buttons: list[UIButton]) -> None:
+        """Draw the title and all buttons defined by the current UI layout."""
         width = screen.get_width()
         screen.blit(title_font.render("SOKOBAN", True, (245, 247, 250)), (24, 15))
-        screen.blit(small.render("SEARCH LAB  /  BREADTH-FIRST SEARCH", True, (155, 171, 191)), (27, 46))
+        subtitle = f"SEARCH LAB  /  {self._selected_key().upper()}"
+        screen.blit(small.render(subtitle, True, (155, 171, 191)), (27, 46))
         right_label = small.render("MASTER 1  •  VISUAL COMPUTING", True, (155, 171, 191))
         screen.blit(right_label, (width - right_label.get_width() - 25, 27))
 
-        def button(rect: tuple[int, int, int, int], label: str, selected: bool = False,
-                   primary: bool = False) -> None:
-            x, y, button_width, button_height = rect
-            fill = (50, 115, 96) if primary else ((49, 77, 110) if selected else (34, 45, 63))
-            edge = (84, 174, 145) if primary or selected else (59, 73, 94)
-            pygame.draw.rect(screen, (10, 16, 27), (x, y + 3, button_width, button_height), border_radius=9)
-            pygame.draw.rect(screen, fill, rect, border_radius=9)
-            pygame.draw.rect(screen, edge, rect, 1, border_radius=9)
-            color = (246, 250, 248) if primary or selected else (202, 211, 222)
-            text = font.render(label, True, color)
+        for button in buttons:
+            x, y, button_width, button_height = button.rect
+            is_solving = button.action == "solve" and (
+                self.level_index, self._selected_key()
+            ) in self.solving_keys
+            fill = (50, 115, 96) if button.primary else (
+                (49, 77, 110) if button.selected else (34, 45, 63))
+            if is_solving:
+                fill = (109, 80, 40)
+            edge = (84, 174, 145) if button.primary or button.selected else (59, 73, 94)
+            pygame.draw.rect(screen, (10, 16, 27), button.rect.move(0, 3), border_radius=9)
+            pygame.draw.rect(screen, fill, button.rect, border_radius=9)
+            pygame.draw.rect(screen, edge, button.rect, 1, border_radius=9)
+            color = (246, 250, 248) if button.primary or button.selected else (202, 211, 222)
+            text = font.render("SOLVING..." if is_solving else button.label, True, color)
             screen.blit(text, text.get_rect(center=(x + button_width // 2, y + button_height // 2)))
-
-        for i in range(5):
-            button((18 + i * 86, 67, 78, 36), f"LEVEL {i + 1}", selected=(i == selected_level))
-        solve_label = "SOLVING..." if solving else "SOLVE  S"
-        play_label = "PAUSE  SPACE" if playing else "PLAY  SPACE"
-        controls = [((18, 116, 102, 42), solve_label, False, True),
-                    ((128, 116, 102, 42), play_label, playing, False),
-                    ((238, 116, 92, 42), "STEP  N", False, False),
-                    ((338, 116, 92, 42), "BACK  B", False, False),
-                    ((438, 116, 82, 42), "RESET  R", False, False)]
-        for rect, label, selected, primary in controls:
-            button(rect, label, selected, primary)
         speed_label = small.render("SPEED   −   /   +", True, (155, 171, 191))
         screen.blit(speed_label, (540, 130))
 
@@ -264,7 +382,7 @@ class SokobanGUI:
 
     def _draw_info(self, pygame: object, screen: object, small: object,
                    panel_x: int, result: SearchResult | None) -> None:
-        """Display solution status and search metrics in a dedicated panel."""
+        """Show selected-solver details and current-level comparison results."""
         screen_width, screen_height = screen.get_size()
         card = pygame.Rect(panel_x + 14, 180, screen_width - panel_x - 34, screen_height - 200)
         pygame.draw.rect(screen, (10, 16, 27), card.move(0, 5), border_radius=18)
@@ -274,28 +392,39 @@ class SokobanGUI:
         y = card.y + 20
         screen.blit(self._render_text(pygame, "SEARCH RESULTS", 16, (226, 232, 240), bold=True), (x, y))
         y += 36
-        screen.blit(self._render_text(pygame, self.level_names[self.level_index].upper(), 13,
+        selected_key = self._selected_key()
+        screen.blit(self._render_text(pygame, selected_key.upper(), 13,
                                       (152, 166, 184)), (x, y))
         y += 25
 
-        if self.solving:
+        is_solving = (self.level_index, selected_key) in self.solving_keys
+        error = self._current_error()
+        if is_solving:
             status, status_color = "SEARCHING", (221, 164, 76)
         elif result and result.found:
             status, status_color = "SOLUTION FOUND", (85, 190, 148)
+        elif error:
+            status, status_color = "SOLVER ERROR", (226, 112, 104)
         elif result:
             status, status_color = "NO SOLUTION", (226, 112, 104)
         else:
             status, status_color = "READY TO SOLVE", (123, 157, 208)
         pill = pygame.Rect(x, y, min(width, 160), 27)
         status_background = (35, 76, 67) if result and result.found else (
-            (77, 60, 38) if self.solving else ((78, 48, 48) if result else (39, 57, 82)))
+            (77, 60, 38) if is_solving else ((78, 48, 48) if result or error else (39, 57, 82)))
         pygame.draw.rect(screen, status_background, pill, border_radius=13)
         pygame.draw.rect(screen, status_color, pill, 1, border_radius=13)
         screen.blit(self._render_text(pygame, status, 12, status_color, bold=True),
                     (pill.x + 11, pill.y + 6))
         y += 44
 
-        if result and result.found:
+        if error:
+            screen.blit(self._render_text(pygame, "Search failed:", 15, (226, 132, 123)), (x, y))
+            y += 25
+            error_text = error[:34]
+            screen.blit(self._render_text(pygame, error_text, 11, (226, 160, 151)), (x, y))
+            y += 50
+        elif result and result.found:
             screen.blit(self._render_text(pygame, str(result.cost), 42, (245, 247, 250), bold=True), (x, y))
             screen.blit(self._render_text(pygame, "MOVES TO SOLVE", 12, (152, 166, 184)), (x + 4, y + 49))
             y += 82
@@ -328,28 +457,59 @@ class SokobanGUI:
                        ("SEARCH TIME", f"{result.elapsed_seconds:.4f}s")]
             self._draw_metric_grid(pygame, screen, small, x, y, width, metrics)
             y += 108
-        else:
-            screen.blit(self._render_text(pygame, "Find the shortest route", 19,
+        elif result is None:
+            screen.blit(self._render_text(pygame, "Choose a search strategy", 18,
                                           (220, 228, 238), bold=True), (x, y))
             y += 30
-            screen.blit(self._render_text(pygame, "BFS explores states by move count.", 13,
+            screen.blit(self._render_text(pygame, "Press S to solve with", 13,
                                           (152, 166, 184)), (x, y))
             y += 29
-            screen.blit(self._render_text(pygame, "Search runs in the background,", 13,
+            screen.blit(self._render_text(pygame, selected_key, 17,
+                                          (85, 190, 148), bold=True), (x, y))
+            y += 29
+            screen.blit(self._render_text(pygame, "A toggles BFS / A*; H changes h1–h3.", 11,
                                           (152, 166, 184)), (x, y))
             y += 20
-            screen.blit(self._render_text(pygame, "so playback controls stay responsive.", 13,
+            screen.blit(self._render_text(pygame, "C compares all registered solvers.", 11,
                                           (152, 166, 184)), (x, y))
             y += 51
 
-        if len(self.results) > 1:
-            screen.blit(self._render_text(pygame, "ALGORITHM COMPARISON", 13,
+        level_results = [
+            (key, item) for (level, key), item in self.results.items()
+            if level == self.level_index
+        ]
+        if len(level_results) > 1:
+            screen.blit(self._render_text(pygame, "ALGORITHM COMPARISON", 12,
                                           (226, 232, 240), bold=True), (x, y))
-            y += 24
-            for name, item in self.results.items():
-                line = f"{name}  ·  cost {item.cost}  ·  {item.expanded:,} expanded"
-                screen.blit(self._render_text(pygame, line, 12, (181, 194, 211)), (x, y))
-                y += 20
+            y += 22
+            header = "ALG    COST    EXP    GEN    OPEN    TIME"
+            screen.blit(self._render_text(pygame, header, 9, (143, 161, 183)), (x, y))
+            y += 17
+            minimum_cost = min((item.cost for _, item in level_results
+                                if item.found and item.cost is not None), default=None)
+            for key, item in sorted(level_results, key=lambda entry: entry[0]):
+                active = key == selected_key
+                row = pygame.Rect(x - 5, y - 2, width + 10, 20)
+                if active:
+                    pygame.draw.rect(screen, (45, 63, 85), row, border_radius=5)
+                short_name = "BFS" if key == "BFS" else key[-3:-1]
+                if item.incomplete:
+                    cost_label, marker = "LIMIT", ""
+                elif not item.found:
+                    cost_label, marker = "—", ""
+                else:
+                    cost_label = str(item.cost)
+                    marker = "*" if item.cost == minimum_cost else (
+                        "!" if minimum_cost is not None and item.cost > minimum_cost else "")
+                row_text = (f"{short_name:<4} {cost_label:>5}{marker:<1} "
+                            f"{item.expanded:>5} {item.generated:>5} "
+                            f"{item.max_frontier:>5} {item.elapsed_seconds:>5.3f}")
+                screen.blit(self._render_text(pygame, row_text, 9,
+                                              (245, 247, 250) if active else (181, 194, 211)),
+                            (x, y))
+                y += 21
+            screen.blit(self._render_text(pygame, "* best cost   ! higher than best", 9,
+                                          (143, 161, 183)), (x, y + 2))
         screen.blit(self._render_text(pygame, "SPACE  play / pause     R  reset", 11,
                                       (120, 139, 162)), (x, card.bottom - 28))
 

@@ -1,8 +1,11 @@
 """Immutable-state Sokoban model with shared static board layouts."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections import deque
+import math
 from pathlib import Path
-from typing import Iterable
+from types import MappingProxyType
+from typing import Iterable, Mapping
 
 Position = tuple[int, int]
 UP = "UP"
@@ -26,6 +29,11 @@ class BoardLayout:
     height: int
     walls: frozenset[Position]
     targets: frozenset[Position]
+    walkable: frozenset[Position] = field(default_factory=frozenset, compare=False, hash=False, repr=False)
+    push_distances: Mapping[Position, tuple[float, ...]] = field(
+        default_factory=lambda: MappingProxyType({}), compare=False, hash=False, repr=False
+    )
+    dead_squares: frozenset[Position] = field(default_factory=frozenset, compare=False, hash=False, repr=False)
 
 
 class SokobanPuzzle:
@@ -96,11 +104,45 @@ class SokobanPuzzle:
             raise ValueError(f"A level must contain exactly one player; found {len(players)}")
         if len(boxes) != len(targets):
             raise ValueError(f"Level has {len(boxes)} boxes and {len(targets)} targets")
+        walkable = {
+            (r, c)
+            for r in range(len(rows))
+            for c in range(width)
+            if (r, c) not in walls
+        }
+        reached: set[Position] = {players[0]}
+        pending: deque[Position] = deque([players[0]])
+        while pending:
+            row, column = pending.popleft()
+            for _, (dr, dc) in ACTIONS:
+                neighbor = (row + dr, column + dc)
+                if neighbor in walkable and neighbor not in reached:
+                    reached.add(neighbor)
+                    pending.append(neighbor)
+        if any(row in (0, len(rows) - 1) or column in (0, width - 1)
+               for row, column in reached):
+            raise ValueError("level is not enclosed")
+        if (set(boxes) | targets) - reached:
+            raise ValueError("level contains a box or target outside the playable maze")
+        # Non-wall cells disconnected from the player are void outside the maze.
+        walls.update(walkable - reached)
+        walkable = frozenset(reached)
+        push_distances = _compute_push_distances(
+            width, len(rows), frozenset(walls), frozenset(targets)
+        )
         static_rows = tuple(
             "".join(WALL if symbol == WALL else EMPTY for symbol in row)
             for row in rows
         )
-        return BoardLayout(static_rows, width, len(rows), frozenset(walls), frozenset(targets)), players[0], frozenset(boxes)
+        dead_squares = frozenset(
+            cell for cell, distances in push_distances.items()
+            if not any(math.isfinite(distance) for distance in distances)
+        )
+        layout = BoardLayout(
+            static_rows, width, len(rows), frozenset(walls), frozenset(targets),
+            walkable, MappingProxyType(push_distances), frozenset(dead_squares),
+        )
+        return layout, players[0], frozenset(boxes)
 
     @classmethod
     def from_lines(cls, lines: Iterable[str]) -> "SokobanPuzzle":
@@ -139,8 +181,18 @@ class SokobanPuzzle:
                 if not self._is_walkable(beyond) or beyond in self.boxes:
                     continue
                 new_boxes = (self.boxes - {adjacent}) | {beyond}
-            successors.append((action, SokobanPuzzle(layout=self.layout, player=adjacent, boxes=new_boxes)))
+            successors.append((action, self._from_successor(self.layout, adjacent, new_boxes)))
         return successors
+
+    @classmethod
+    def _from_successor(cls, layout: BoardLayout, player: Position,
+                        boxes: frozenset[Position]) -> "SokobanPuzzle":
+        """Create a successor from already-validated model data without rescanning the board."""
+        state = cls.__new__(cls)
+        object.__setattr__(state, "layout", layout)
+        object.__setattr__(state, "player", player)
+        object.__setattr__(state, "boxes", boxes)
+        return state
 
     def _is_walkable(self, position: Position) -> bool:
         """Return whether a position is inside the board and not a wall."""
@@ -174,3 +226,31 @@ class SokobanPuzzle:
     def display(self) -> str:
         """Return the printable board representation."""
         return str(self)
+
+
+def _compute_push_distances(width: int, height: int, walls: frozenset[Position],
+                            targets: frozenset[Position]) -> dict[Position, tuple[float, ...]]:
+    """Precompute wall-aware push distances from each floor cell to each target.
+
+    Reverse edges correspond to a legal forward push: if a box could move from
+    ``previous`` to ``current``, the support cell behind ``previous`` must also
+    be floor. A multi-source BFS from all targets computes the nearest-target
+    push distance once for this layout.
+    """
+    walkable = {(row, column) for row in range(height) for column in range(width)} - walls
+    result: dict[Position, list[float]] = {cell: [] for cell in walkable}
+    for target in sorted(targets):
+        distances: dict[Position, int] = {target: 0}
+        pending: deque[Position] = deque([target])
+        while pending:
+            row, column = pending.popleft()
+            for _, (dr, dc) in ACTIONS:
+                previous = (row - dr, column - dc)
+                support = (row - 2 * dr, column - 2 * dc)
+                if previous not in walkable or support not in walkable or previous in distances:
+                    continue
+                distances[previous] = distances[(row, column)] + 1
+                pending.append(previous)
+        for cell in walkable:
+            result[cell].append(float(distances.get(cell, math.inf)))
+    return {cell: tuple(distances) for cell, distances in result.items()}
