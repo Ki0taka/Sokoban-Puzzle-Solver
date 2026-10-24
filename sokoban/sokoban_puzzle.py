@@ -131,8 +131,8 @@ class SokobanPuzzle:
             width, len(rows), frozenset(walls), frozenset(targets)
         )
         static_rows = tuple(
-            "".join(WALL if symbol == WALL else EMPTY for symbol in row)
-            for row in rows
+            "".join(WALL if (r, c) in walls else EMPTY for c in range(width))
+            for r in range(len(rows))
         )
         dead_squares = frozenset(
             cell for cell, distances in push_distances.items()

@@ -37,6 +37,32 @@ def h2(state: SokobanPuzzle) -> int:
     return 2 * unplaced + distance_sum
 
 
+@lru_cache(maxsize=8192)
+def _min_assignment(cost_rows: tuple[tuple[float, ...], ...]) -> float:
+    """Minimum-cost one-to-one box/target assignment via bitmask DP, cached."""
+    n = len(cost_rows)
+    if n == 0:
+        return 0.0
+    n_targets = len(cost_rows[0])
+    # prev[mask] = min cost to assign the first popcount(mask) boxes using
+    # exactly the target slots indicated by set bits in mask.
+    prev: dict[int, float] = {0: 0.0}
+    for box_index in range(n):
+        row = cost_rows[box_index]
+        curr: dict[int, float] = {}
+        for mask, cost in prev.items():
+            for t in range(n_targets):
+                bit = 1 << t
+                if mask & bit:
+                    continue
+                new_mask = mask | bit
+                candidate = cost + row[t]
+                if new_mask not in curr or candidate < curr[new_mask]:
+                    curr[new_mask] = candidate
+        prev = curr
+    return min(prev.values()) if prev else math.inf
+
+
 def h3(state: SokobanPuzzle) -> float:
     """Estimate remaining pushes with wall-aware assignment plus approach cost.
 
@@ -58,27 +84,8 @@ def h3(state: SokobanPuzzle) -> float:
             return math.inf
 
     boxes = tuple(sorted(state.boxes))
-    targets = tuple(sorted(layout.targets))
-
-    @lru_cache(maxsize=None)
-    def assign(box_index: int, used_targets: int) -> float:
-        """Return the cheapest push-distance assignment for remaining boxes."""
-        if box_index == len(boxes):
-            return 0.0
-        box = boxes[box_index]
-        row = layout.push_distances[box]
-        best = math.inf
-        for target_index in range(len(targets)):
-            bit = 1 << target_index
-            if used_targets & bit:
-                continue
-            remaining = assign(box_index + 1, used_targets | bit)
-            candidate = row[target_index] + remaining
-            if candidate < best:
-                best = candidate
-        return best
-
-    push_lower_bound = assign(0, 0)
+    cost_rows = tuple(layout.push_distances[box] for box in boxes)
+    push_lower_bound = _min_assignment(cost_rows)
     if math.isinf(push_lower_bound):
         return math.inf
     # This bound is zero when standing adjacent to any box; on a push action

@@ -14,6 +14,11 @@ from .sokoban_puzzle import SokobanPuzzle
 
 Solver = Callable[[SokobanPuzzle], SearchResult]
 
+# Issue 5a: clean mapping from solver registry key to short display label.
+_SOLVER_SHORT_NAMES: dict[str, str] = {
+    "BFS": "BFS", "A* (h1)": "A*h1", "A* (h2)": "A*h2", "A* (h3)": "A*h3",
+}
+
 
 @dataclass(frozen=True)
 class UIButton:
@@ -24,19 +29,6 @@ class UIButton:
     action: str
     selected: bool = False
     primary: bool = False
-
-
-class _FreeTypeFontAdapter:
-    """Give Pygame's freetype renderer the small font API used by this GUI."""
-
-    def __init__(self, freetype: object, size: int) -> None:
-        """Create a freetype font using its bundled default face."""
-        self._font = freetype.Font(None, size)
-
-    def render(self, text: str, antialias: bool, color: tuple[int, int, int]) -> object:
-        """Render text and return only the surface, matching pygame.font.Font."""
-        surface, _ = self._font.render(text, color)
-        return surface
 
 
 class SokobanGUI:
@@ -62,7 +54,7 @@ class SokobanGUI:
         self.step = 0
         self.delay_ms = 450
         self.last_step_time = 0
-        self.message = "Select Solve to run BFS."
+        self.message = ""  # Issue 3: neutral initial message
         self._font_cache: dict[tuple[int, bool], object] = {}
         self._freetype_font_keys: set[tuple[int, bool]] = set()
 
@@ -82,6 +74,19 @@ class SokobanGUI:
             self.result_queue.put((level_index, key, generation, None,
                                    f"{type(error).__name__}: {error}"))
 
+    def _solve_batch_in_background(
+        self,
+        batch: list[tuple[int, str, Solver, SokobanPuzzle, int]],
+    ) -> None:
+        """Run multiple solvers sequentially in one thread, queuing each result.
+
+        Issue 1: compare mode previously spawned one thread per solver, so
+        CPython's GIL made searches compete and ``elapsed_seconds`` was
+        inflated. Running them sequentially gives comparable timings.
+        """
+        for level_index, key, solver, state, generation in batch:
+            self._solve_in_background(level_index, key, solver, state, generation)
+
     def _current_result(self) -> SearchResult | None:
         """Return the latest BFS result for the selected level."""
         return self.results.get((self.level_index, self._selected_key()))
@@ -95,7 +100,7 @@ class SokobanGUI:
         self.level_index = index
         self.step = 0
         self.playing = False
-        self.message = "Select Solve to run BFS."
+        self.message = ""  # Issue 3: algorithm-neutral
 
     def run(self, initial_level: int = 1) -> None:
         """Start the pygame event loop; requires pygame to be installed."""
@@ -108,7 +113,7 @@ class SokobanGUI:
         screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
         pygame.display.set_caption("Sokoban Search Lab")
         clock = pygame.time.Clock()
-        title_font, font, small = self._create_fonts(pygame)
+        # Issue 6: no startup fonts — all rendering goes through _render_text.
         self._change_level(max(0, min(4, initial_level - 1)))
         running = True
         while running:
@@ -175,38 +180,51 @@ class SokobanGUI:
                     self.playing = False
 
             screen.fill((17, 24, 39))
-            self._draw_controls(pygame, screen, title_font, font, small, buttons)
+            self._draw_controls(pygame, screen, buttons)
             state = result.path[self.step] if result and result.found else self.levels[self.level_index]
             panel_x = min(810, screen.get_width() - 310)
             self._draw_board(pygame, screen, state, panel_x, screen.get_height())
-            self._draw_info(pygame, screen, small, panel_x, result)
+            self._draw_info(pygame, screen, panel_x, result)
             pygame.display.flip()
             clock.tick(60)
         pygame.quit()
 
     def _layout_buttons(self, pygame: object, width: int) -> list[UIButton]:
-        """Build clickable controls for the current window width and selection."""
-        buttons = [UIButton(pygame.Rect(18 + index * 86, 67, 78, 36),
+        """Build clickable controls for the current window width and selection.
+
+        Issue 5c: scale button positions when the window is narrower than the
+        reference width so controls stay visible.
+        """
+        ref = 1180
+        scale = min(1.0, width / ref) if width < 900 else 1.0
+
+        def sx(x: int) -> int:
+            return int(x * scale)
+
+        def sw(w: int) -> int:
+            return max(36, int(w * scale))
+
+        buttons = [UIButton(pygame.Rect(sx(18 + index * 86), 67, sw(78), 36),
                             f"LEVEL {index + 1}", f"level:{index}", index == self.level_index)
                    for index in range(5)]
         buttons.extend([
-            UIButton(pygame.Rect(540, 67, 72, 36), "BFS", "algorithm:BFS",
+            UIButton(pygame.Rect(sx(540), 67, sw(72), 36), "BFS", "algorithm:BFS",
                      self.selected_algorithm == "BFS"),
-            UIButton(pygame.Rect(618, 67, 72, 36), "A*", "algorithm:A*",
+            UIButton(pygame.Rect(sx(618), 67, sw(72), 36), "A*", "algorithm:A*",
                      self.selected_algorithm == "A*"),
         ])
         if self.selected_algorithm == "A*":
             for index, name in enumerate(("h1", "h2", "h3")):
-                buttons.append(UIButton(pygame.Rect(704 + index * 48, 67, 42, 36),
+                buttons.append(UIButton(pygame.Rect(sx(704 + index * 48), 67, sw(42), 36),
                                         name, f"heuristic:{name}", self.selected_heuristic == name))
         buttons.extend([
-            UIButton(pygame.Rect(18, 116, 102, 42), "SOLVE  S", "solve", primary=True),
-            UIButton(pygame.Rect(128, 116, 102, 42),
+            UIButton(pygame.Rect(sx(18), 116, sw(102), 42), "SOLVE  S", "solve", primary=True),
+            UIButton(pygame.Rect(sx(128), 116, sw(102), 42),
                      "PAUSE  SPACE" if self.playing else "PLAY  SPACE", "play", self.playing),
-            UIButton(pygame.Rect(238, 116, 92, 42), "STEP  N", "forward"),
-            UIButton(pygame.Rect(338, 116, 92, 42), "BACK  B", "back"),
-            UIButton(pygame.Rect(438, 116, 82, 42), "RESET  R", "reset"),
-            UIButton(pygame.Rect(742, 116, 116, 42), "COMPARE  C", "compare"),
+            UIButton(pygame.Rect(sx(238), 116, sw(92), 42), "STEP  N", "forward"),
+            UIButton(pygame.Rect(sx(338), 116, sw(92), 42), "BACK  B", "back"),
+            UIButton(pygame.Rect(sx(438), 116, sw(82), 42), "RESET  R", "reset"),
+            UIButton(pygame.Rect(sx(742), 116, sw(116), 42), "COMPARE  C", "compare"),
         ])
         return buttons
 
@@ -262,48 +280,44 @@ class SokobanGUI:
             self.step = 0
         self.playing = not self.playing
 
-    @staticmethod
-    def _create_fonts(pygame: object) -> tuple[object, object, object]:
-        """Create GUI fonts, falling back to freetype if pygame.font is unavailable."""
-        # Pygame 2.6.1 has a pygame.font/sysfont circular import under Python 3.14.
-        if sys.version_info >= (3, 14) and pygame.version.vernum <= (2, 6, 1):
-            import pygame._freetype as freetype
-
-            freetype.init()
-            return (_FreeTypeFontAdapter(freetype, 27), _FreeTypeFontAdapter(freetype, 17),
-                    _FreeTypeFontAdapter(freetype, 14))
-        try:
-            pygame_font = pygame.font
-            pygame_font.init()
-            return (pygame_font.SysFont("arial", 27, bold=True), pygame_font.SysFont("arial", 17),
-                    pygame_font.SysFont("arial", 14))
-        except (ImportError, NotImplementedError):
-            # Pygame 2.6.1's pygame.font module can fail to import on Python 3.14
-            # because pygame.sysfont imports Font before pygame.font defines it.
-            import pygame._freetype as freetype
-
-            freetype.init()
-            return (_FreeTypeFontAdapter(freetype, 27), _FreeTypeFontAdapter(freetype, 17),
-                    _FreeTypeFontAdapter(freetype, 14))
-
     def _start_solve(self, keys: list[str] | None = None) -> None:
-        """Run the selected solver or a requested set of solvers in workers."""
+        """Run the selected solver or a requested set of solvers in workers.
+
+        Issue 1: compare requests (len(keys) > 1) run sequentially in ONE
+        worker thread so elapsed_seconds values are comparable and not inflated
+        by GIL contention.  Single-solver requests keep the original behavior.
+        """
         level_index = self.level_index
         keys = keys or [self._selected_key()]
         self.message = "Solving..."
         self.step = 0
         self.playing = False
+        batch: list[tuple[int, str, Solver, SokobanPuzzle, int]] = []
         for key in keys:
-            solver = self.solvers[key]
             cache_key = (level_index, key)
+            if cache_key in self.solving_keys:
+                continue  # avoid duplicate in-flight solve
+            solver = self.solvers[key]
             self._next_generation += 1
             generation = self._next_generation
             self._request_generations[cache_key] = generation
             self.solving_keys.add(cache_key)
             self.errors.pop(cache_key, None)
+            batch.append((level_index, key, solver, self.levels[level_index], generation))
+        if not batch:
+            return
+        if len(batch) == 1:
+            li, k, s, st, g = batch[0]
             worker = threading.Thread(
                 target=self._solve_in_background,
-                args=(level_index, key, solver, self.levels[level_index], generation),
+                args=(li, k, s, st, g),
+                daemon=True,
+            )
+            worker.start()
+        else:
+            worker = threading.Thread(
+                target=self._solve_batch_in_background,
+                args=(batch,),
                 daemon=True,
             )
             worker.start()
@@ -314,14 +328,14 @@ class SokobanGUI:
         if result and result.found:
             self.step = min(len(result.path) - 1, self.step + 1)
 
-    def _draw_controls(self, pygame: object, screen: object, title_font: object,
-                       font: object, small: object, buttons: list[UIButton]) -> None:
+    def _draw_controls(self, pygame: object, screen: object,
+                       buttons: list[UIButton]) -> None:
         """Draw the title and all buttons defined by the current UI layout."""
         width = screen.get_width()
-        screen.blit(title_font.render("SOKOBAN", True, (245, 247, 250)), (24, 15))
+        screen.blit(self._render_text(pygame, "SOKOBAN", 27, (245, 247, 250), bold=True), (24, 15))
         subtitle = f"SEARCH LAB  /  {self._selected_key().upper()}"
-        screen.blit(small.render(subtitle, True, (155, 171, 191)), (27, 46))
-        right_label = small.render("MASTER 1  •  VISUAL COMPUTING", True, (155, 171, 191))
+        screen.blit(self._render_text(pygame, subtitle, 14, (155, 171, 191)), (27, 46))
+        right_label = self._render_text(pygame, "MASTER 1  •  VISUAL COMPUTING", 14, (155, 171, 191))
         screen.blit(right_label, (width - right_label.get_width() - 25, 27))
 
         for button in buttons:
@@ -338,10 +352,9 @@ class SokobanGUI:
             pygame.draw.rect(screen, fill, button.rect, border_radius=9)
             pygame.draw.rect(screen, edge, button.rect, 1, border_radius=9)
             color = (246, 250, 248) if button.primary or button.selected else (202, 211, 222)
-            text = font.render("SOLVING..." if is_solving else button.label, True, color)
+            text = self._render_text(pygame, "SOLVING..." if is_solving else button.label, 17, color)
             screen.blit(text, text.get_rect(center=(x + button_width // 2, y + button_height // 2)))
-        speed_label = small.render("SPEED   −   /   +", True, (155, 171, 191))
-        screen.blit(speed_label, (540, 130))
+        screen.blit(self._render_text(pygame, "SPEED   −   /   +", 14, (155, 171, 191)), (540, 130))
 
     def _draw_board(self, pygame: object, screen: object, state: SokobanPuzzle,
                     panel_x: int, screen_height: int) -> None:
@@ -380,7 +393,7 @@ class SokobanGUI:
                     if pos == state.player:
                         self._draw_player(pygame, screen, rect, tile)
 
-    def _draw_info(self, pygame: object, screen: object, small: object,
+    def _draw_info(self, pygame: object, screen: object,
                    panel_x: int, result: SearchResult | None) -> None:
         """Show selected-solver details and current-level comparison results."""
         screen_width, screen_height = screen.get_size()
@@ -416,7 +429,12 @@ class SokobanGUI:
         pygame.draw.rect(screen, status_color, pill, 1, border_radius=13)
         screen.blit(self._render_text(pygame, status, 12, status_color, bold=True),
                     (pill.x + 11, pill.y + 6))
-        y += 44
+        y += 34
+
+        # Issue 3: display self.message below the status pill.
+        if self.message:
+            screen.blit(self._render_text(pygame, self.message, 11, (181, 194, 211)), (x, y))
+        y += 18
 
         if error:
             screen.blit(self._render_text(pygame, "Search failed:", 15, (226, 132, 123)), (x, y))
@@ -447,7 +465,7 @@ class SokobanGUI:
                        ("GENERATED", f"{result.generated:,}"),
                        ("MAX FRONTIER", f"{result.max_frontier:,}"),
                        ("SEARCH TIME", f"{result.elapsed_seconds:.4f}s")]
-            self._draw_metric_grid(pygame, screen, small, x, y, width, metrics)
+            self._draw_metric_grid(pygame, screen, x, y, width, metrics)
             y += 108
         elif result:
             screen.blit(self._render_text(pygame, "No solution found", 17, (226, 132, 123)), (x, y))
@@ -455,7 +473,7 @@ class SokobanGUI:
             metrics = [("EXPANDED", f"{result.expanded:,}"), ("GENERATED", f"{result.generated:,}"),
                        ("MAX FRONTIER", f"{result.max_frontier:,}"),
                        ("SEARCH TIME", f"{result.elapsed_seconds:.4f}s")]
-            self._draw_metric_grid(pygame, screen, small, x, y, width, metrics)
+            self._draw_metric_grid(pygame, screen, x, y, width, metrics)
             y += 108
         elif result is None:
             screen.blit(self._render_text(pygame, "Choose a search strategy", 18,
@@ -482,8 +500,10 @@ class SokobanGUI:
             screen.blit(self._render_text(pygame, "ALGORITHM COMPARISON", 12,
                                           (226, 232, 240), bold=True), (x, y))
             y += 22
-            header = "ALG    COST    EXP    GEN    OPEN    TIME"
-            screen.blit(self._render_text(pygame, header, 9, (143, 161, 183)), (x, y))
+            # Issue 5b: draw header with explicit column offsets for proportional fonts.
+            col_offsets = (0, 45, 95, 145, 195, 245)
+            for label, offset in zip(("ALG", "COST", "EXP", "GEN", "OPEN", "TIME"), col_offsets):
+                screen.blit(self._render_text(pygame, label, 9, (143, 161, 183)), (x + offset, y))
             y += 17
             minimum_cost = min((item.cost for _, item in level_results
                                 if item.found and item.cost is not None), default=None)
@@ -492,7 +512,8 @@ class SokobanGUI:
                 row = pygame.Rect(x - 5, y - 2, width + 10, 20)
                 if active:
                     pygame.draw.rect(screen, (45, 63, 85), row, border_radius=5)
-                short_name = "BFS" if key == "BFS" else key[-3:-1]
+                # Issue 5a: use clean mapping instead of key[-3:-1].
+                short_name = _SOLVER_SHORT_NAMES.get(key, key[:6])
                 if item.incomplete:
                     cost_label, marker = "LIMIT", ""
                 elif not item.found:
@@ -501,12 +522,12 @@ class SokobanGUI:
                     cost_label = str(item.cost)
                     marker = "*" if item.cost == minimum_cost else (
                         "!" if minimum_cost is not None and item.cost > minimum_cost else "")
-                row_text = (f"{short_name:<4} {cost_label:>5}{marker:<1} "
-                            f"{item.expanded:>5} {item.generated:>5} "
-                            f"{item.max_frontier:>5} {item.elapsed_seconds:>5.3f}")
-                screen.blit(self._render_text(pygame, row_text, 9,
-                                              (245, 247, 250) if active else (181, 194, 211)),
-                            (x, y))
+                row_color = (245, 247, 250) if active else (181, 194, 211)
+                cells = (short_name, f"{cost_label}{marker}",
+                         str(item.expanded), str(item.generated),
+                         str(item.max_frontier), f"{item.elapsed_seconds:.3f}")
+                for cell, offset in zip(cells, col_offsets):
+                    screen.blit(self._render_text(pygame, cell, 9, row_color), (x + offset, y))
                 y += 21
             screen.blit(self._render_text(pygame, "* best cost   ! higher than best", 9,
                                           (143, 161, 183)), (x, y + 2))
@@ -515,7 +536,11 @@ class SokobanGUI:
 
     def _render_text(self, pygame: object, text: str, size: int,
                      color: tuple[int, int, int], bold: bool = False) -> object:
-        """Render one text label with the best font backend available."""
+        """Render one text label with the best font backend available.
+
+        Issue 6: this is the single consolidated font path. The old
+        ``_create_fonts`` / ``_FreeTypeFontAdapter`` plumbing is removed.
+        """
         font_key = (size, bold)
         if font_key not in self._font_cache:
             use_freetype = (sys.version_info >= (3, 14)
@@ -544,7 +569,7 @@ class SokobanGUI:
             return font.render(text, color)[0]
         return font.render(text, True, color)
 
-    def _draw_metric_grid(self, pygame: object, screen: object, small: object,
+    def _draw_metric_grid(self, pygame: object, screen: object,
                           x: int, y: int, width: int,
                           metrics: list[tuple[str, str]]) -> None:
         """Draw compact two-column statistic cards."""

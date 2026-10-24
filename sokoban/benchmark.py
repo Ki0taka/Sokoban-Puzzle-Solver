@@ -24,17 +24,19 @@ def benchmark_all(output_path: str | Path | None = None,
         state = SokobanPuzzle.from_file(LEVEL_DIR / f"level{level_number}.txt")
         for key in keys:
             try:
-                result: SearchResult = SOLVERS[key](state, max_expanded=EXPANSION_CAP)
-                cost = "limit" if result.incomplete else (
-                    "—" if result.cost is None else str(result.cost)
+                results = [SOLVERS[key](state, max_expanded=EXPANSION_CAP) for _ in range(3)]
+                representative = results[0]
+                median_time = sorted(r.elapsed_seconds for r in results)[1]
+                cost = "limit" if representative.incomplete else (
+                    "—" if representative.cost is None else str(representative.cost)
                 )
                 rows.append(
-                    f"| Example {level_number} | {key} | {cost} | {result.expanded} | "
-                    f"{result.generated} | {result.max_frontier} | {result.elapsed_seconds:.6f} |"
+                    f"| Example {level_number} | {key} | {cost} | {representative.expanded} | "
+                    f"{representative.generated} | {representative.max_frontier} | {median_time:.6f} |"
                 )
             except Exception as error:
                 rows.append(
-                    f"| Example {level_number} | {key} | error: {type(error).__name__} | — | — | — | — |"
+                    f"| Example {level_number} | {key} | error: {type(error).__name__}: {error} | — | — | — | — |"
                 )
     table = "\n".join([
         "| Level | Algorithm | Solution cost | Expanded | Generated | Max frontier | Time (s) |",
