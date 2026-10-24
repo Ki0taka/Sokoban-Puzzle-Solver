@@ -1,4 +1,4 @@
-"""Sokoban puzzle model and search package."""
+"""Sokoban board and search code."""
 
 from .sokoban_puzzle import SokobanPuzzle
 

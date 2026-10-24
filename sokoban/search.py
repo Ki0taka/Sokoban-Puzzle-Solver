@@ -1,4 +1,4 @@
-"""Graph-search algorithms and shared result records for Sokoban."""
+"""Search algorithms and their result record."""
 
 from collections import deque
 from dataclasses import dataclass
@@ -19,7 +19,7 @@ Heuristic = Callable[[SokobanPuzzle], int | float]
 
 @dataclass
 class SearchResult:
-    """Solution and performance counters from a search run."""
+    """The solution, if found, and a few search counters."""
 
     solution: Node | None
     actions: list[str]
@@ -35,14 +35,14 @@ class SearchResult:
 
     @property
     def found(self) -> bool:
-        """Return whether a solution node was found."""
+        """Whether the search found a solution."""
         return self.solution is not None
 
 
 def _result(solution: Node | None, expanded: int, generated: int, maximum: int,
             started: float, algorithm: str, incomplete: bool = False,
             reopened: int = 0) -> SearchResult:
-    """Build a result record and reconstruct its path when a goal was found."""
+    """Build the result and collect the path if a goal was found."""
     elapsed = perf_counter() - started
     if solution is None:
         return SearchResult(None, [], [], None, expanded, generated, maximum,
@@ -54,10 +54,10 @@ def _result(solution: Node | None, expanded: int, generated: int, maximum: int,
 
 
 def bfs(initial_state: SokobanPuzzle, *, max_expanded: int | None = None) -> SearchResult:
-    """Find an optimal solution with graph-search BFS and unit step costs.
+    """Find a shortest solution with BFS (each move costs one).
 
-    ``max_expanded`` is an optional safety cap used by benchmarks. If reached
-    before the frontier is exhausted, the result is marked ``incomplete``.
+    The optional expansion cap is used by benchmarks. Hitting it marks the
+    result as incomplete.
     """
     started = perf_counter()
     root = Node(initial_state)
@@ -82,7 +82,7 @@ def bfs(initial_state: SokobanPuzzle, *, max_expanded: int | None = None) -> Sea
             state = child.state
             if state in explored or state in frontier_states:
                 continue
-            # The course's BFS tests a goal when its node is generated.
+            # Check for a goal as soon as we generate the state.
             if state.isGoal():
                 return _result(child, expanded, generated, maximum, started, "BFS")
             frontier.append(child)
@@ -93,13 +93,10 @@ def bfs(initial_state: SokobanPuzzle, *, max_expanded: int | None = None) -> Sea
 
 def astar(initial_state: SokobanPuzzle, heuristic: Heuristic, *,
           max_expanded: int | None = None) -> SearchResult:
-    """Run graph-search A* using the lecture's Open/Closed update rules.
+    """Run A* with Open and Closed sets.
 
-    Open is a min-priority heap ordered by ``(f, h, insertion_order)`` plus a
-    state-to-best-node dictionary. Closed maps expanded states to their best
-    expanded node. The goal test occurs when a node is dequeued. Better paths
-    replace Open entries lazily or reopen a Closed state, which is required for
-    inconsistent heuristics.
+    Better paths replace Open entries or reopen a state in Closed. Reopening
+    matters when the heuristic is inconsistent.
     """
     started = perf_counter()
     heuristic_name = getattr(heuristic, "__name__", "custom")
@@ -129,7 +126,7 @@ def astar(initial_state: SokobanPuzzle, heuristic: Heuristic, *,
             continue  # stale heap entry superseded by a lower-f node
         del open_nodes[current.state]
 
-        # Figure 1.29 tests the goal after dequeuing current from Open.
+        # Test the goal when it comes off the Open heap.
         if current.state.isGoal():
             return _result(current, expanded, generated, maximum, started, algorithm,
                            reopened=reopened)
@@ -148,7 +145,7 @@ def astar(initial_state: SokobanPuzzle, heuristic: Heuristic, *,
             if open_node is not None:
                 if child.f >= open_node.f:
                     continue
-                # Lazy deletion: replace the dictionary value and push a new heap entry.
+                # Leave the old heap entry in place; it will be skipped later.
             else:
                 closed_node = closed_nodes.get(successor)
                 if closed_node is not None:

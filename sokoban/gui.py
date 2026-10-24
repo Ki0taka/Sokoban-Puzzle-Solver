@@ -1,4 +1,4 @@
-"""Pygame interface for choosing, solving, and animating Sokoban levels."""
+"""Pygame interface for playing and solving Sokoban levels."""
 
 from __future__ import annotations
 import queue
@@ -14,7 +14,7 @@ from .sokoban_puzzle import SokobanPuzzle
 
 Solver = Callable[[SokobanPuzzle], SearchResult]
 
-# Issue 5a: clean mapping from solver registry key to short display label.
+# Short labels for the solver names shown in the interface.
 _SOLVER_SHORT_NAMES: dict[str, str] = {
     "BFS": "BFS", "A* (h1)": "A*h1", "A* (h2)": "A*h2", "A* (h3)": "A*h3",
 }
@@ -22,7 +22,7 @@ _SOLVER_SHORT_NAMES: dict[str, str] = {
 
 @dataclass(frozen=True)
 class UIButton:
-    """A clickable GUI control described by its rectangle and action id."""
+    """A button's position and the action it triggers."""
 
     rect: object
     label: str
@@ -32,10 +32,10 @@ class UIButton:
 
 
 class SokobanGUI:
-    """Responsive board viewer with background solver execution and playback."""
+    """Sokoban window with solver controls and playback."""
 
     def __init__(self) -> None:
-        """Prepare level data and a registry for search algorithms."""
+        """Load the levels and set up the solver controls."""
         self.level_dir = Path(__file__).parent / "levels"
         self.levels = [SokobanPuzzle.from_file(self.level_dir / f"level{i}.txt") for i in range(1, 6)]
         self.level_names = [f"Example {i}" for i in range(1, 6)]
@@ -54,19 +54,19 @@ class SokobanGUI:
         self.step = 0
         self.delay_ms = 450
         self.last_step_time = 0
-        self.message = ""  # Issue 3: neutral initial message
+        self.message = ""  # Status messages apply to every solver.
         self._font_cache: dict[tuple[int, bool], object] = {}
         self._freetype_font_keys: set[tuple[int, bool]] = set()
 
     def _selected_key(self) -> str:
-        """Return the registry key selected by the algorithm and heuristic controls."""
+        """Get the solver selected in the controls."""
         if self.selected_algorithm == "BFS":
             return "BFS"
         return f"A* ({self.selected_heuristic})"
 
     def _solve_in_background(self, level_index: int, key: str, solver: Solver,
                              state: SokobanPuzzle, generation: int) -> None:
-        """Run one solver away from the event thread and queue its result or error."""
+        """Run a solver in the background and queue its result or error."""
         try:
             result = solver(state)
             self.result_queue.put((level_index, key, generation, result, None))
@@ -78,32 +78,30 @@ class SokobanGUI:
         self,
         batch: list[tuple[int, str, Solver, SokobanPuzzle, int]],
     ) -> None:
-        """Run multiple solvers sequentially in one thread, queuing each result.
+        """Run several solvers in order, queuing each result as it finishes.
 
-        Issue 1: compare mode previously spawned one thread per solver, so
-        CPython's GIL made searches compete and ``elapsed_seconds`` was
-        inflated. Running them sequentially gives comparable timings.
+        Running the batch in sequence makes the solver timings easier to compare.
         """
         for level_index, key, solver, state, generation in batch:
             self._solve_in_background(level_index, key, solver, state, generation)
 
     def _current_result(self) -> SearchResult | None:
-        """Return the latest BFS result for the selected level."""
+        """Get the latest BFS result for this level."""
         return self.results.get((self.level_index, self._selected_key()))
 
     def _current_error(self) -> str | None:
-        """Return the selected solver's error message, if its run failed."""
+        """Get the selected solver's error, if it failed."""
         return self.errors.get((self.level_index, self._selected_key()))
 
     def _change_level(self, index: int) -> None:
-        """Select a level and clear playback state."""
+        """Switch levels and reset playback."""
         self.level_index = index
         self.step = 0
         self.playing = False
-        self.message = ""  # Issue 3: algorithm-neutral
+        self.message = ""  # The message applies to every solver.
 
     def run(self, initial_level: int = 1) -> None:
-        """Start the pygame event loop; requires pygame to be installed."""
+        """Start the window's event loop."""
         try:
             import pygame
         except ImportError as error:
@@ -113,7 +111,7 @@ class SokobanGUI:
         screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
         pygame.display.set_caption("Sokoban Search Lab")
         clock = pygame.time.Clock()
-        # Issue 6: no startup fonts — all rendering goes through _render_text.
+        # Text rendering picks the best font backend available.
         self._change_level(max(0, min(4, initial_level - 1)))
         running = True
         while running:
@@ -190,10 +188,9 @@ class SokobanGUI:
         pygame.quit()
 
     def _layout_buttons(self, pygame: object, width: int) -> list[UIButton]:
-        """Build clickable controls for the current window width and selection.
+        """Lay out the controls for the current window size and selection.
 
-        Issue 5c: scale button positions when the window is narrower than the
-        reference width so controls stay visible.
+        Scale button positions on narrow windows so the controls stay visible.
         """
         ref = 1180
         scale = min(1.0, width / ref) if width < 900 else 1.0
@@ -229,7 +226,7 @@ class SokobanGUI:
         return buttons
 
     def _activate_button(self, action: str) -> None:
-        """Dispatch a button id to the matching GUI action."""
+        """Run the action attached to a button."""
         if action.startswith("level:"):
             self._change_level(int(action.split(":", 1)[1]))
         elif action.startswith("algorithm:"):
@@ -250,7 +247,7 @@ class SokobanGUI:
             self.step, self.playing = 0, False
 
     def _set_algorithm(self, algorithm: str) -> None:
-        """Select BFS or A* and reset playback to that algorithm's cached path."""
+        """Select BFS or A* and show its saved path."""
         if algorithm not in ("BFS", "A*") or algorithm == self.selected_algorithm:
             return
         self.selected_algorithm = algorithm
@@ -258,7 +255,7 @@ class SokobanGUI:
         self.playing = False
 
     def _set_heuristic(self, name: str) -> None:
-        """Select one A* heuristic and reset playback to its cached path."""
+        """Pick an A* heuristic and show its saved path."""
         if name not in self.heuristics or name == self.selected_heuristic:
             return
         self.selected_heuristic = name
@@ -266,13 +263,13 @@ class SokobanGUI:
         self.playing = False
 
     def _cycle_heuristic(self) -> None:
-        """Advance to the next registered heuristic."""
+        """Move to the next heuristic."""
         names = list(self.heuristics)
         next_index = (names.index(self.selected_heuristic) + 1) % len(names)
         self._set_heuristic(names[next_index])
 
     def _toggle_play(self) -> None:
-        """Toggle playback, restarting from the initial state when at the end."""
+        """Start or pause playback; restart if the path has ended."""
         result = self._current_result()
         if result is None or not result.found:
             return
@@ -281,11 +278,10 @@ class SokobanGUI:
         self.playing = not self.playing
 
     def _start_solve(self, keys: list[str] | None = None) -> None:
-        """Run the selected solver or a requested set of solvers in workers.
+        """Run the selected solver, or a batch of solvers, in the background.
 
-        Issue 1: compare requests (len(keys) > 1) run sequentially in ONE
-        worker thread so elapsed_seconds values are comparable and not inflated
-        by GIL contention.  Single-solver requests keep the original behavior.
+        A batch runs in sequence in one worker, making the solver timings
+        easier to compare. Single-solver requests use the same path.
         """
         level_index = self.level_index
         keys = keys or [self._selected_key()]
@@ -323,14 +319,14 @@ class SokobanGUI:
             worker.start()
 
     def _step_forward(self) -> None:
-        """Advance one state when a solution is available."""
+        """Move playback forward by one state."""
         result = self._current_result()
         if result and result.found:
             self.step = min(len(result.path) - 1, self.step + 1)
 
     def _draw_controls(self, pygame: object, screen: object,
                        buttons: list[UIButton]) -> None:
-        """Draw the title and all buttons defined by the current UI layout."""
+        """Draw the title and buttons."""
         width = screen.get_width()
         screen.blit(self._render_text(pygame, "SOKOBAN", 27, (245, 247, 250), bold=True), (24, 15))
         subtitle = f"SEARCH LAB  /  {self._selected_key().upper()}"
@@ -358,13 +354,13 @@ class SokobanGUI:
 
     def _draw_board(self, pygame: object, screen: object, state: SokobanPuzzle,
                     panel_x: int, screen_height: int) -> None:
-        """Draw a centered, fit-to-window board using primitive shapes."""
+        """Draw the board centered and scaled to fit the window."""
         layout = state.layout
         card = pygame.Rect(20, 180, panel_x - 34, screen_height - 200)
         pygame.draw.rect(screen, (10, 16, 27), card.move(0, 5), border_radius=18)
         pygame.draw.rect(screen, (27, 37, 54), card, border_radius=18)
         pygame.draw.rect(screen, (48, 63, 85), card, 1, border_radius=18)
-        # Title and a compact legend give the board a clear visual frame.
+        # Keep the title and legend close to the board.
         screen.blit(self._render_text(pygame, "PUZZLE BOARD", 16, (226, 232, 240), bold=True),
                     (card.x + 22, card.y + 17))
         screen.blit(self._render_text(pygame, "WALL", 13, (152, 166, 184)), (card.x + 22, card.y + 48))
@@ -395,7 +391,7 @@ class SokobanGUI:
 
     def _draw_info(self, pygame: object, screen: object,
                    panel_x: int, result: SearchResult | None) -> None:
-        """Show selected-solver details and current-level comparison results."""
+        """Show details for the selected solver and level."""
         screen_width, screen_height = screen.get_size()
         card = pygame.Rect(panel_x + 14, 180, screen_width - panel_x - 34, screen_height - 200)
         pygame.draw.rect(screen, (10, 16, 27), card.move(0, 5), border_radius=18)
@@ -431,7 +427,7 @@ class SokobanGUI:
                     (pill.x + 11, pill.y + 6))
         y += 34
 
-        # Issue 3: display self.message below the status pill.
+        # Put status messages just below the status label.
         if self.message:
             screen.blit(self._render_text(pygame, self.message, 11, (181, 194, 211)), (x, y))
         y += 18
@@ -500,7 +496,7 @@ class SokobanGUI:
             screen.blit(self._render_text(pygame, "ALGORITHM COMPARISON", 12,
                                           (226, 232, 240), bold=True), (x, y))
             y += 22
-            # Issue 5b: draw header with explicit column offsets for proportional fonts.
+            # Fixed offsets keep the columns lined up with proportional fonts.
             col_offsets = (0, 45, 95, 145, 195, 245)
             for label, offset in zip(("ALG", "COST", "EXP", "GEN", "OPEN", "TIME"), col_offsets):
                 screen.blit(self._render_text(pygame, label, 9, (143, 161, 183)), (x + offset, y))
@@ -512,7 +508,7 @@ class SokobanGUI:
                 row = pygame.Rect(x - 5, y - 2, width + 10, 20)
                 if active:
                     pygame.draw.rect(screen, (45, 63, 85), row, border_radius=5)
-                # Issue 5a: use clean mapping instead of key[-3:-1].
+                # Use the short label defined above.
                 short_name = _SOLVER_SHORT_NAMES.get(key, key[:6])
                 if item.incomplete:
                     cost_label, marker = "LIMIT", ""
@@ -536,10 +532,9 @@ class SokobanGUI:
 
     def _render_text(self, pygame: object, text: str, size: int,
                      color: tuple[int, int, int], bold: bool = False) -> object:
-        """Render one text label with the best font backend available.
+        """Draw text using whichever font backend is available.
 
-        Issue 6: this is the single consolidated font path. The old
-        ``_create_fonts`` / ``_FreeTypeFontAdapter`` plumbing is removed.
+        Try freetype first, then fall back to pygame's regular font module.
         """
         font_key = (size, bold)
         if font_key not in self._font_cache:
@@ -572,7 +567,7 @@ class SokobanGUI:
     def _draw_metric_grid(self, pygame: object, screen: object,
                           x: int, y: int, width: int,
                           metrics: list[tuple[str, str]]) -> None:
-        """Draw compact two-column statistic cards."""
+        """Draw the small statistic cards."""
         gap, card_height = 8, 43
         card_width = (width - gap) // 2
         for index, (label, value) in enumerate(metrics):
@@ -588,7 +583,7 @@ class SokobanGUI:
     @staticmethod
     def _draw_wall_tile(pygame: object, screen: object, rect: object, tile: int,
                         row: int, col: int) -> None:
-        """Draw a subtly shaded brick tile with staggered mortar joints."""
+        """Draw a brick wall tile."""
         base = (90, 105, 120) if (row + col) % 2 else (82, 97, 113)
         pygame.draw.rect(screen, base, rect, border_radius=4)
         pygame.draw.rect(screen, (123, 139, 153), rect, 1, border_radius=4)
@@ -608,7 +603,7 @@ class SokobanGUI:
     @staticmethod
     def _draw_box(pygame: object, screen: object, rect: object, tile: int,
                   on_target: bool) -> None:
-        """Draw a wooden crate with inset panel lines and a soft shadow."""
+        """Draw a crate with panel lines and a shadow."""
         box_rect = rect.inflate(-tile // 5, -tile // 5)
         shadow = box_rect.move(2, 3)
         pygame.draw.rect(screen, (71, 55, 43), shadow, border_radius=6)
@@ -621,7 +616,7 @@ class SokobanGUI:
 
     @staticmethod
     def _draw_player(pygame: object, screen: object, rect: object, tile: int) -> None:
-        """Draw a friendly, high-contrast player sprite."""
+        """Draw the player."""
         center_x, center_y = rect.centerx, rect.centery
         pygame.draw.ellipse(screen, (42, 53, 65),
                             (center_x - tile // 4, center_y + tile // 5,

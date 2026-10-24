@@ -1,4 +1,4 @@
-"""Admissible and experimental heuristic functions for Sokoban A*."""
+"""Heuristics used by Sokoban's A* search."""
 
 from functools import lru_cache
 import math
@@ -10,7 +10,7 @@ Heuristic = Callable[[SokobanPuzzle], int | float]
 
 
 def h1(state: SokobanPuzzle) -> int:
-    """Return the number of boxes not currently on a target.
+    """Count boxes that are not on targets.
 
     Every such box needs at least one push, and each push costs one move, so
     this is both admissible and consistent for unit-cost Sokoban actions.
@@ -19,7 +19,7 @@ def h1(state: SokobanPuzzle) -> int:
 
 
 def h2(state: SokobanPuzzle) -> int:
-    """Return the assignment-specified Manhattan estimate from Part 2.
+    """Compute the Manhattan estimate used in Part 2.
 
     This is deliberately the formula given in the assignment. The doubled
     misplaced-box term can overestimate, so this heuristic is not admissible
@@ -39,13 +39,12 @@ def h2(state: SokobanPuzzle) -> int:
 
 @lru_cache(maxsize=8192)
 def _min_assignment(cost_rows: tuple[tuple[float, ...], ...]) -> float:
-    """Minimum-cost one-to-one box/target assignment via bitmask DP, cached."""
+    """Find the cheapest box-to-target assignment using cached bitmask DP."""
     n = len(cost_rows)
     if n == 0:
         return 0.0
     n_targets = len(cost_rows[0])
-    # prev[mask] = min cost to assign the first popcount(mask) boxes using
-    # exactly the target slots indicated by set bits in mask.
+    # For each mask, keep the cheapest way to assign that many boxes to its targets.
     prev: dict[int, float] = {0: 0.0}
     for box_index in range(n):
         row = cost_rows[box_index]
@@ -64,7 +63,7 @@ def _min_assignment(cost_rows: tuple[tuple[float, ...], ...]) -> float:
 
 
 def h3(state: SokobanPuzzle) -> float:
-    """Estimate remaining pushes with wall-aware assignment plus approach cost.
+    """Estimate the remaining pushes, accounting for walls and approach moves.
 
     The push-distance matrix was precomputed once when the shared layout was
     parsed. A minimum one-to-one box/target assignment lower-bounds the pushes
@@ -88,8 +87,7 @@ def h3(state: SokobanPuzzle) -> float:
     push_lower_bound = _min_assignment(cost_rows)
     if math.isinf(push_lower_bound):
         return math.inf
-    # This bound is zero when standing adjacent to any box; on a push action
-    # the parent therefore cannot lose more than the one move being charged.
+    # Standing next to a box makes this zero; a push can lower it by at most one.
     approach = max(0, min(
         abs(state.player[0] - box[0]) + abs(state.player[1] - box[1])
         for box in boxes

@@ -1,4 +1,4 @@
-"""Run the registered search algorithms and write a Markdown report."""
+"""Run the solvers and save their results as a Markdown table."""
 
 from pathlib import Path
 from typing import Iterable
@@ -12,11 +12,9 @@ EXPANSION_CAP = 500_000
 
 def benchmark_all(output_path: str | Path | None = None,
                   algorithms: Iterable[str] | None = None) -> str:
-    """Benchmark every selected solver on all bundled levels and save a table.
+    """Run each selected solver on the bundled levels and save a table.
 
-    The expansion cap limits memory and runtime. Capped runs are reported as
-    ``limit`` rather than being presented as failed or completed searches.
-    Returns the generated Markdown table.
+    Runs that hit the expansion cap are marked ``limit``. Returns the table.
     """
     keys = list(algorithms) if algorithms is not None else list(SOLVERS)
     rows: list[str] = []
@@ -55,7 +53,7 @@ def benchmark_all(output_path: str | Path | None = None,
 
 
 def main() -> None:
-    """Run all algorithms and print the generated Markdown table."""
+    """Run the benchmarks and print the table."""
     print(benchmark_all())
 
 

@@ -1,4 +1,4 @@
-"""Immutable-state Sokoban model with shared static board layouts."""
+"""Sokoban board and state representation."""
 
 from dataclasses import dataclass, field
 from collections import deque
@@ -22,7 +22,7 @@ VALID_SYMBOLS = {PLAYER, WALL, EMPTY, TARGET, BOX, PLAYER_ON_TARGET, BOX_ON_TARG
 
 @dataclass(frozen=True)
 class BoardLayout:
-    """Static maze data shared by all states derived from one level."""
+    """Board details shared by states from the same level."""
 
     rows: tuple[str, ...]
     width: int
@@ -37,7 +37,7 @@ class BoardLayout:
 
 
 class SokobanPuzzle:
-    """A Sokoban state; only player and box locations change between states.
+    """A board state; only the player and box positions change.
 
     Construct from encoded board lines or use ``from_lines``/``from_file``.
     ``lines`` and ``layout`` are mutually exclusive; internal construction
@@ -47,14 +47,14 @@ class SokobanPuzzle:
     __slots__ = ("layout", "player", "boxes")
 
     def __setattr__(self, name: str, value: object) -> None:
-        """Allow each state field to be initialized once, then keep it immutable."""
+        """Let fields be set during setup, then keep the state fixed."""
         if name not in self.__slots__ or hasattr(self, name):
             raise AttributeError(f"{type(self).__name__} attribute {name!r} is immutable")
         object.__setattr__(self, name, value)
 
     def __init__(self, lines: Iterable[str] | None = None, *, layout: BoardLayout | None = None,
                  player: Position | None = None, boxes: Iterable[Position] = ()) -> None:
-        """Create a validated board state from text or internal static data."""
+        """Create a board state from text or existing board data."""
         if layout is None:
             if lines is None:
                 raise ValueError("Provide board lines or a shared layout")
@@ -72,14 +72,14 @@ class SokobanPuzzle:
 
     @staticmethod
     def _parse_lines(lines: Iterable[str]) -> tuple[BoardLayout, Position, frozenset[Position]]:
-        """Parse and validate encoded rows, padding ragged rows with walls."""
+        """Parse the rows, padding shorter ones with walls."""
         source = [line.rstrip("\r\n") for line in lines]
         if not source:
             raise ValueError("A level must contain at least one row")
         if any(symbol not in VALID_SYMBOLS for row in source for symbol in row):
             raise ValueError("Level contains an unsupported cell symbol")
         width = max(map(len, source))
-        # Ragged text rows are padded as walls so missing cells cannot be entered.
+        # Treat missing cells in short rows as walls.
         rows = tuple(row.ljust(width, WALL) for row in source)
         walls: set[Position] = set()
         targets: set[Position] = set()
@@ -124,7 +124,7 @@ class SokobanPuzzle:
             raise ValueError("level is not enclosed")
         if (set(boxes) | targets) - reached:
             raise ValueError("level contains a box or target outside the playable maze")
-        # Non-wall cells disconnected from the player are void outside the maze.
+        # Disconnected floor cells are outside the playable maze.
         walls.update(walkable - reached)
         walkable = frozenset(reached)
         push_distances = _compute_push_distances(
@@ -146,16 +146,16 @@ class SokobanPuzzle:
 
     @classmethod
     def from_lines(cls, lines: Iterable[str]) -> "SokobanPuzzle":
-        """Create a puzzle from encoded rows; raises ValueError for invalid levels."""
+        """Build a puzzle from rows, or raise ValueError if they are invalid."""
         return cls(lines)
 
     @classmethod
     def from_file(cls, path: str | Path) -> "SokobanPuzzle":
-        """Load a text level from ``path`` using UTF-8 encoding."""
+        """Read a level file as UTF-8."""
         return cls.from_lines(Path(path).read_text(encoding="utf-8").splitlines())
 
     def _validate_dynamic_state(self) -> None:
-        """Reject internal states that place objects in blocked or overlapping cells."""
+        """Check that no objects overlap or sit in blocked cells."""
         walkable = {(r, c) for r in range(self.layout.height) for c in range(self.layout.width)} - self.layout.walls
         if self.player not in walkable or self.player in self.boxes:
             raise ValueError("Player must occupy an unblocked cell distinct from all boxes")
@@ -165,11 +165,11 @@ class SokobanPuzzle:
             raise ValueError("Internal state must preserve the level's number of boxes")
 
     def isGoal(self) -> bool:
-        """Return whether every box occupies a target."""
+        """Check whether all boxes are on targets."""
         return self.boxes == self.layout.targets
 
     def successorFunction(self) -> list[tuple[str, "SokobanPuzzle"]]:
-        """Return all legal moves and pushes as independent successor states."""
+        """Return the legal moves and the states they lead to."""
         successors: list[tuple[str, SokobanPuzzle]] = []
         for action, (dr, dc) in ACTIONS:
             adjacent = (self.player[0] + dr, self.player[1] + dc)
@@ -187,7 +187,7 @@ class SokobanPuzzle:
     @classmethod
     def _from_successor(cls, layout: BoardLayout, player: Position,
                         boxes: frozenset[Position]) -> "SokobanPuzzle":
-        """Create a successor from already-validated model data without rescanning the board."""
+        """Make a successor using the board data already in memory."""
         state = cls.__new__(cls)
         object.__setattr__(state, "layout", layout)
         object.__setattr__(state, "player", player)
@@ -195,21 +195,21 @@ class SokobanPuzzle:
         return state
 
     def _is_walkable(self, position: Position) -> bool:
-        """Return whether a position is inside the board and not a wall."""
+        """Check whether a position is on open floor."""
         row, column = position
         return (0 <= row < self.layout.height and 0 <= column < self.layout.width
                 and position not in self.layout.walls)
 
     def __eq__(self, other: object) -> bool:
-        """Compare dynamic state values on the same static board."""
+        """Compare states on the same board."""
         return isinstance(other, SokobanPuzzle) and self.layout == other.layout and self.player == other.player and self.boxes == other.boxes
 
     def __hash__(self) -> int:
-        """Hash player and box locations together with the board identity."""
+        """Hash the player, boxes, and board."""
         return hash((self.layout, self.player, self.boxes))
 
     def __str__(self) -> str:
-        """Render the board with the required Sokoban symbols."""
+        """Draw the board using Sokoban's text symbols."""
         board = [
             [WALL if (r, c) in self.layout.walls else EMPTY
              for c in range(self.layout.width)]
@@ -224,13 +224,13 @@ class SokobanPuzzle:
         return "\n".join("".join(row) for row in board)
 
     def display(self) -> str:
-        """Return the printable board representation."""
+        """Return the board as text."""
         return str(self)
 
 
 def _compute_push_distances(width: int, height: int, walls: frozenset[Position],
                             targets: frozenset[Position]) -> dict[Position, tuple[float, ...]]:
-    """Precompute wall-aware push distances from each floor cell to each target.
+    """Precompute push distances from floor cells to each target.
 
     Reverse edges correspond to a legal forward push: if a box could move from
     ``previous`` to ``current``, the support cell behind ``previous`` must also

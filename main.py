@@ -1,4 +1,4 @@
-"""Convenience root entry point."""
+"""Start the Sokoban app from the project root."""
 
 from sokoban.main import main
 

@@ -1,4 +1,4 @@
-"""Command-line and graphical entry point for Sokoban."""
+"""Command-line and graphical entry point."""
 
 import argparse
 from pathlib import Path
@@ -10,7 +10,7 @@ LEVEL_DIR = Path(__file__).parent / "levels"
 
 
 def main() -> None:
-    """Parse options and launch the CLI or pygame interface."""
+    """Read the command-line options and start the requested mode."""
     parser = argparse.ArgumentParser(description="Solve and animate Sokoban levels")
     parser.add_argument("--cli", action="store_true", help="solve all bundled levels in the console")
     parser.add_argument("--benchmark", action="store_true", help="benchmark all registered solvers and write results.md")
