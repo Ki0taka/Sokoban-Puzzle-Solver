@@ -58,6 +58,51 @@ class SokobanGUI:
         self._font_cache: dict[tuple[int, bool], object] = {}
         self._freetype_font_keys: set[tuple[int, bool]] = set()
 
+        self.tileset_path = Path(__file__).parent / "assets" / "tileset.png"
+        self._raw_sprites: dict[str, object] = {}
+        self._scaled_sprites: dict[tuple[str, int], object] = {}
+
+    def _load_tileset(self, pygame: object) -> None:
+        """Slice the 13x8 Kenney sprite sheet into individual puzzle elements."""
+        if not self.tileset_path.exists():
+            print(f"[!] Warning: Tileset image not found at {self.tileset_path.resolve()}")
+            return
+
+        sheet = pygame.image.load(str(self.tileset_path)).convert_alpha()
+        sheet_w, sheet_h = sheet.get_size()
+
+        # This tilesheet has 13 columns and 8 rows
+        tw = sheet_w // 13
+        th = sheet_h // 8
+
+        # (col, row) coordinates matching the elements:
+        grid_map = {
+            "floor": (11, 6),  # Gray cobblestone floor (bottom-right area)
+            "wall": (7, 6),  # Gray brick wall (bottom row)
+            "target": (0, 3),  # Red diamond target marker
+            "box": (1, 0),  # Red crate
+            "box_target": (4, 0),  # Red crate resting on goal/target base
+            "player": (0, 4),  # Character facing forward
+        }
+
+        for name, (c, r) in grid_map.items():
+            sub = sheet.subsurface(pygame.Rect(c * tw, r * th, tw, th))
+            self._raw_sprites[name] = sub.copy()
+
+        print(f"[✓] Successfully loaded {len(self._raw_sprites)} sprites from 13x8 tileset.")
+
+    def _get_tile_sprite(self, pygame: object, name: str, size: int) -> object | None:
+        """Cache and retrieve pixel-perfect scaled tiles."""
+        if name not in self._raw_sprites:
+            return None
+        cache_key = (name, size)
+        if cache_key not in self._scaled_sprites:
+            # pygame.transform.scale preserves sharp pixel art edges
+            self._scaled_sprites[cache_key] = pygame.transform.scale(
+                self._raw_sprites[name], (size, size)
+            )
+        return self._scaled_sprites[cache_key]
+
     def _selected_key(self) -> str:
         """Get the solver selected in the controls."""
         if self.selected_algorithm == "BFS":
@@ -110,6 +155,9 @@ class SokobanGUI:
         width, height = 1180, 760
         screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
         pygame.display.set_caption("Sokoban Search Lab")
+
+        self._load_tileset(pygame)  # <--- FIXED: Call after set_mode
+
         clock = pygame.time.Clock()
         # Text rendering picks the best font backend available.
         self._change_level(max(0, min(4, initial_level - 1)))
@@ -360,33 +408,68 @@ class SokobanGUI:
         pygame.draw.rect(screen, (10, 16, 27), card.move(0, 5), border_radius=18)
         pygame.draw.rect(screen, (27, 37, 54), card, border_radius=18)
         pygame.draw.rect(screen, (48, 63, 85), card, 1, border_radius=18)
-        # Keep the title and legend close to the board.
+
         screen.blit(self._render_text(pygame, "PUZZLE BOARD", 16, (226, 232, 240), bold=True),
                     (card.x + 22, card.y + 17))
         screen.blit(self._render_text(pygame, "WALL", 13, (152, 166, 184)), (card.x + 22, card.y + 48))
         screen.blit(self._render_text(pygame, "FLOOR", 13, (152, 166, 184)), (card.x + 92, card.y + 48))
+
         board_rect = pygame.Rect(card.x + 22, card.y + 77, card.width - 44, card.height - 99)
         pygame.draw.rect(screen, (20, 29, 43), board_rect, border_radius=13)
         pygame.draw.rect(screen, (39, 53, 73), board_rect, 1, border_radius=13)
+
         area_w, area_h = board_rect.width - 32, board_rect.height - 32
         tile = max(12, min(54, area_w // layout.width, area_h // layout.height))
         ox = board_rect.x + (board_rect.width - layout.width * tile) // 2
         oy = board_rect.y + (board_rect.height - layout.height * tile) // 2
+
         for row in range(layout.height):
             for col in range(layout.width):
-                rect = pygame.Rect(ox + col * tile, oy + row * tile, tile - 2, tile - 2)
+                rect = pygame.Rect(ox + col * tile, oy + row * tile, tile, tile)
                 pos = (row, col)
+
+                # 1. Wall Tile
                 if pos in layout.walls:
-                    self._draw_wall_tile(pygame, screen, rect, tile, row, col)
+                    wall_sprite = self._get_tile_sprite(pygame, "wall", tile)
+                    if wall_sprite:
+                        screen.blit(wall_sprite, rect)
+                    else:
+                        self._draw_wall_tile(pygame, screen, rect, tile, row, col)
+                    continue
+
+                # 2. Floor Tile
+                floor_sprite = self._get_tile_sprite(pygame, "floor", tile)
+                if floor_sprite:
+                    screen.blit(floor_sprite, rect)
                 else:
                     pygame.draw.rect(screen, (220, 207, 180), rect, border_radius=5)
                     pygame.draw.rect(screen, (231, 220, 198), rect, 1, border_radius=5)
-                    if pos in layout.targets:
+
+                # 3. Target Tile
+                if pos in layout.targets:
+                    target_sprite = self._get_tile_sprite(pygame, "target", tile)
+                    if target_sprite:
+                        screen.blit(target_sprite, rect)
+                    else:
                         pygame.draw.circle(screen, (166, 111, 68), rect.center, max(4, tile // 5), 2)
                         pygame.draw.circle(screen, (166, 111, 68), rect.center, max(2, tile // 13))
-                    if pos in state.boxes:
-                        self._draw_box(pygame, screen, rect, tile, pos in layout.targets)
-                    if pos == state.player:
+
+                # 4. Box Tile
+                if pos in state.boxes:
+                    on_target = pos in layout.targets
+                    sprite_name = "box_target" if on_target else "box"
+                    box_sprite = self._get_tile_sprite(pygame, sprite_name, tile)
+                    if box_sprite:
+                        screen.blit(box_sprite, rect)
+                    else:
+                        self._draw_box(pygame, screen, rect, tile, on_target)
+
+                # 5. Player
+                if pos == state.player:
+                    player_sprite = self._get_tile_sprite(pygame, "player", tile)
+                    if player_sprite:
+                        screen.blit(player_sprite, rect)
+                    else:
                         self._draw_player(pygame, screen, rect, tile)
 
     def _draw_info(self, pygame: object, screen: object,
