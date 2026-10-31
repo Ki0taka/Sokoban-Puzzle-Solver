@@ -62,6 +62,7 @@ class SokobanGUI:
         self._raw_sprites: dict[str, object] = {}
         self._scaled_sprites: dict[tuple[str, int], object] = {}
 
+
     def _load_tileset(self, pygame: object) -> None:
         """Slice the 13x8 Kenney sprite sheet into individual puzzle elements."""
         if not self.tileset_path.exists():
@@ -75,14 +76,19 @@ class SokobanGUI:
         tw = sheet_w // 13
         th = sheet_h // 8
 
-        # (col, row) coordinates matching the elements:
+
         grid_map = {
-            "floor": (11, 6),  # Gray cobblestone floor (bottom-right area)
-            "wall": (7, 6),  # Gray brick wall (bottom row)
-            "target": (0, 3),  # Red diamond target marker
-            "box": (1, 0),  # Red crate
-            "box_target": (4, 0),  # Red crate resting on goal/target base
-            "player": (0, 4),  # Character facing forward
+            "floor": (11, 6),
+            "wall": (7, 7),
+            "wall_top": (7, 6),
+            "target": (11, 2),
+            "box": (6, 0),
+            "box_target": (9, 4),
+            "player": (0, 4),
+            "player_down": (0, 4),
+            "player_up": (3, 4),
+            "player_right": (0, 6),
+            "player_left": (3, 6),
         }
 
         for name, (c, r) in grid_map.items():
@@ -90,6 +96,27 @@ class SokobanGUI:
             self._raw_sprites[name] = sub.copy()
 
         print(f"[✓] Successfully loaded {len(self._raw_sprites)} sprites from 13x8 tileset.")
+
+    def _get_player_sprite_name(self, result: SearchResult | None) -> str:
+        """Determine the player's facing direction from their last coordinate change."""
+        if not result or not result.found or self.step == 0:
+            return "player"
+
+        prev_r, prev_c = result.path[self.step - 1].player
+        curr_r, curr_c = result.path[self.step].player
+
+        dr = curr_r - prev_r
+        dc = curr_c - prev_c
+
+        if dr < 0:
+            return "player_up"
+        if dr > 0:
+            return "player_down"
+        if dc < 0:
+            return "player_left"
+        if dc > 0:
+            return "player_right"
+        return "player"
 
     def _get_tile_sprite(self, pygame: object, name: str, size: int) -> object | None:
         """Cache and retrieve pixel-perfect scaled tiles."""
@@ -326,21 +353,14 @@ class SokobanGUI:
         self.playing = not self.playing
 
     def _start_solve(self, keys: list[str] | None = None) -> None:
-        """Run the selected solver, or a batch of solvers, in the background.
-
-        A batch runs in sequence in one worker, making the solver timings
-        easier to compare. Single-solver requests use the same path.
-        """
+        """Run the selected solver, or a batch of solvers, in the background."""
         level_index = self.level_index
         keys = keys or [self._selected_key()]
-        self.message = "Solving..."
-        self.step = 0
-        self.playing = False
         batch: list[tuple[int, str, Solver, SokobanPuzzle, int]] = []
         for key in keys:
             cache_key = (level_index, key)
             if cache_key in self.solving_keys:
-                continue  # avoid duplicate in-flight solve
+                continue
             solver = self.solvers[key]
             self._next_generation += 1
             generation = self._next_generation
@@ -350,21 +370,22 @@ class SokobanGUI:
             batch.append((level_index, key, solver, self.levels[level_index], generation))
         if not batch:
             return
+        self.message = "Solving..."
+        self.step = 0
+        self.playing = False
         if len(batch) == 1:
             li, k, s, st, g = batch[0]
-            worker = threading.Thread(
+            threading.Thread(
                 target=self._solve_in_background,
                 args=(li, k, s, st, g),
                 daemon=True,
-            )
-            worker.start()
+            ).start()
         else:
-            worker = threading.Thread(
+            threading.Thread(
                 target=self._solve_batch_in_background,
                 args=(batch,),
                 daemon=True,
-            )
-            worker.start()
+            ).start()
 
     def _step_forward(self) -> None:
         """Move playback forward by one state."""
@@ -409,10 +430,33 @@ class SokobanGUI:
         pygame.draw.rect(screen, (27, 37, 54), card, border_radius=18)
         pygame.draw.rect(screen, (48, 63, 85), card, 1, border_radius=18)
 
+        # 1. Board Title
         screen.blit(self._render_text(pygame, "PUZZLE BOARD", 16, (226, 232, 240), bold=True),
                     (card.x + 22, card.y + 17))
-        screen.blit(self._render_text(pygame, "WALL", 13, (152, 166, 184)), (card.x + 22, card.y + 48))
-        screen.blit(self._render_text(pygame, "FLOOR", 13, (152, 166, 184)), (card.x + 92, card.y + 48))
+
+        # ---> MAKE SURE THE TWO OLD "WALL" AND "FLOOR" LINES ARE DELETED HERE <---
+
+        # 2. Mini Icon Legend
+        legend_items = [
+            ("wall", "WALL"),
+            ("floor", "FLOOR"),
+            ("target", "GOAL"),
+            ("box", "BOX"),
+            ("box_target", "SOLVED"),
+            ("player", "PLAYER"),
+        ]
+        lx = card.x + 22
+        for sprite_key, label in legend_items:
+            icon = self._get_tile_sprite(pygame, sprite_key, 18)
+            if icon:
+                screen.blit(icon, (lx, card.y + 45))
+                lx += 24
+            text_surf = self._render_text(pygame, label, 12, (152, 166, 184))
+            text_rect = text_surf.get_rect(midleft=(lx, card.y + 54))
+            screen.blit(text_surf, text_rect)
+            lx += text_rect.width + 22
+
+        board_rect = pygame.Rect(card.x + 22, card.y + 77, card.width - 44, card.height - 99)
 
         board_rect = pygame.Rect(card.x + 22, card.y + 77, card.width - 44, card.height - 99)
         pygame.draw.rect(screen, (20, 29, 43), board_rect, border_radius=13)
@@ -428,9 +472,11 @@ class SokobanGUI:
                 rect = pygame.Rect(ox + col * tile, oy + row * tile, tile, tile)
                 pos = (row, col)
 
-                # 1. Wall Tile
+                # 1. Wall Tile (Smart 3D stacking: front-ledge on bottom edges, flat brick inside)
                 if pos in layout.walls:
-                    wall_sprite = self._get_tile_sprite(pygame, "wall", tile)
+                    has_wall_below = (row + 1, col) in layout.walls
+                    wall_key = "wall_top" if (has_wall_below and "wall_top" in self._raw_sprites) else "wall"
+                    wall_sprite = self._get_tile_sprite(pygame, wall_key, tile)
                     if wall_sprite:
                         screen.blit(wall_sprite, rect)
                     else:
@@ -443,7 +489,13 @@ class SokobanGUI:
                     screen.blit(floor_sprite, rect)
                 else:
                     pygame.draw.rect(screen, (220, 207, 180), rect, border_radius=5)
-                    pygame.draw.rect(screen, (231, 220, 198), rect, 1, border_radius=5)
+
+                # Optional 3D Ambient Shadow cast by a wall directly above this floor tile
+                if (row - 1, col) in layout.walls:
+                    shadow_h = max(3, tile // 7)
+                    wall_shadow = pygame.Surface((tile, shadow_h), pygame.SRCALPHA)
+                    wall_shadow.fill((0, 0, 0, 65))
+                    screen.blit(wall_shadow, (rect.x, rect.y))
 
                 # 3. Target Tile
                 if pos in layout.targets:
@@ -452,25 +504,43 @@ class SokobanGUI:
                         screen.blit(target_sprite, rect)
                     else:
                         pygame.draw.circle(screen, (166, 111, 68), rect.center, max(4, tile // 5), 2)
-                        pygame.draw.circle(screen, (166, 111, 68), rect.center, max(2, tile // 13))
 
-                # 4. Box Tile
+                # 4. Box Tile (with 3D drop shadow)
                 if pos in state.boxes:
                     on_target = pos in layout.targets
                     sprite_name = "box_target" if on_target else "box"
                     box_sprite = self._get_tile_sprite(pygame, sprite_name, tile)
                     if box_sprite:
+                        shadow_surf = pygame.Surface((tile - 6, max(4, tile // 8)), pygame.SRCALPHA)
+                        shadow_surf.fill((0, 0, 0, 80))
+                        screen.blit(shadow_surf, (rect.x + 3, rect.bottom - max(3, tile // 10)))
                         screen.blit(box_sprite, rect)
                     else:
                         self._draw_box(pygame, screen, rect, tile, on_target)
 
-                # 5. Player
+                # 5. Player (slightly lifted with 3D foot shadow)
                 if pos == state.player:
-                    player_sprite = self._get_tile_sprite(pygame, "player", tile)
+                    sprite_name = self._get_player_sprite_name(self._current_result())
+                    player_sprite = self._get_tile_sprite(pygame, sprite_name, tile)
                     if player_sprite:
-                        screen.blit(player_sprite, rect)
+                        foot_shadow = pygame.Surface((tile // 2, max(4, tile // 7)), pygame.SRCALPHA)
+                        pygame.draw.ellipse(foot_shadow, (0, 0, 0, 90), foot_shadow.get_rect())
+                        screen.blit(foot_shadow, (rect.centerx - tile // 4, rect.bottom - max(5, tile // 6)))
+                        screen.blit(player_sprite, rect.move(0, -max(2, tile // 14)))
                     else:
                         self._draw_player(pygame, screen, rect, tile)
+
+
+
+
+    @staticmethod
+    def _fmt_num(val: int) -> str:
+        """Format large integers compactly so table columns never overlap."""
+        if val >= 1_000_000:
+            return f"{val / 1_000_000:.1f}M"
+        if val >= 10_000:
+            return f"{val / 1_000:.1f}k"
+        return str(val)
 
     def _draw_info(self, pygame: object, screen: object,
                    panel_x: int, result: SearchResult | None) -> None:
@@ -480,14 +550,14 @@ class SokobanGUI:
         pygame.draw.rect(screen, (10, 16, 27), card.move(0, 5), border_radius=18)
         pygame.draw.rect(screen, (27, 37, 54), card, border_radius=18)
         pygame.draw.rect(screen, (48, 63, 85), card, 1, border_radius=18)
-        x, width = card.x + 20, card.width - 40
-        y = card.y + 20
+        x, width = card.x + 18, card.width - 36
+        y = card.y + 16
         screen.blit(self._render_text(pygame, "SEARCH RESULTS", 16, (226, 232, 240), bold=True), (x, y))
-        y += 36
+        y += 28
         selected_key = self._selected_key()
         screen.blit(self._render_text(pygame, selected_key.upper(), 13,
                                       (152, 166, 184)), (x, y))
-        y += 25
+        y += 22
 
         is_solving = (self.level_index, selected_key) in self.solving_keys
         error = self._current_error()
@@ -501,59 +571,61 @@ class SokobanGUI:
             status, status_color = "NO SOLUTION", (226, 112, 104)
         else:
             status, status_color = "READY TO SOLVE", (123, 157, 208)
-        pill = pygame.Rect(x, y, min(width, 160), 27)
+        pill = pygame.Rect(x, y, min(width, 160), 25)
         status_background = (35, 76, 67) if result and result.found else (
             (77, 60, 38) if is_solving else ((78, 48, 48) if result or error else (39, 57, 82)))
-        pygame.draw.rect(screen, status_background, pill, border_radius=13)
-        pygame.draw.rect(screen, status_color, pill, 1, border_radius=13)
-        screen.blit(self._render_text(pygame, status, 12, status_color, bold=True),
+        pygame.draw.rect(screen, status_background, pill, border_radius=12)
+        pygame.draw.rect(screen, status_color, pill, 1, border_radius=12)
+        screen.blit(self._render_text(pygame, status, 11, status_color, bold=True),
                     (pill.x + 11, pill.y + 6))
-        y += 34
+        y += 30
 
         # Put status messages just below the status label.
         if self.message:
             screen.blit(self._render_text(pygame, self.message, 11, (181, 194, 211)), (x, y))
-        y += 18
+            y += 18
+        else:
+            y += 6
 
         if error:
             screen.blit(self._render_text(pygame, "Search failed:", 15, (226, 132, 123)), (x, y))
-            y += 25
+            y += 24
             error_text = error[:34]
             screen.blit(self._render_text(pygame, error_text, 11, (226, 160, 151)), (x, y))
-            y += 50
+            y += 42
         elif result and result.found:
-            screen.blit(self._render_text(pygame, str(result.cost), 42, (245, 247, 250), bold=True), (x, y))
-            screen.blit(self._render_text(pygame, "MOVES TO SOLVE", 12, (152, 166, 184)), (x + 4, y + 49))
-            y += 82
+            screen.blit(self._render_text(pygame, str(result.cost), 36, (245, 247, 250), bold=True), (x, y))
+            screen.blit(self._render_text(pygame, "MOVES TO SOLVE", 11, (152, 166, 184)), (x + 2, y + 40))
+            y += 62
             current_action = "START" if self.step == 0 else result.actions[self.step - 1]
-            action_card = pygame.Rect(x, y, width, 61)
-            pygame.draw.rect(screen, (35, 49, 68), action_card, border_radius=11)
-            screen.blit(self._render_text(pygame, "CURRENT ACTION", 11, (152, 166, 184)),
-                        (action_card.x + 12, action_card.y + 9))
-            screen.blit(self._render_text(pygame, current_action, 17, (245, 247, 250), bold=True),
-                        (action_card.x + 12, action_card.y + 29))
-            y += 75
+            action_card = pygame.Rect(x, y, width, 50)
+            pygame.draw.rect(screen, (35, 49, 68), action_card, border_radius=10)
+            screen.blit(self._render_text(pygame, "CURRENT ACTION", 10, (152, 166, 184)),
+                        (action_card.x + 12, action_card.y + 7))
+            screen.blit(self._render_text(pygame, current_action, 15, (245, 247, 250), bold=True),
+                        (action_card.x + 12, action_card.y + 24))
+            y += 58
             progress_width = max(0, int(width * self.step / max(1, len(result.actions))))
-            pygame.draw.rect(screen, (50, 65, 86), (x, y + 12, width, 6), border_radius=3)
+            pygame.draw.rect(screen, (50, 65, 86), (x, y + 6, width, 6), border_radius=3)
             if progress_width:
-                pygame.draw.rect(screen, (85, 190, 148), (x, y + 12, progress_width, 6), border_radius=3)
-            screen.blit(self._render_text(pygame, f"STEP  {self.step} / {len(result.actions)}", 12,
-                                          (181, 194, 211)), (x, y + 26))
-            y += 56
+                pygame.draw.rect(screen, (85, 190, 148), (x, y + 6, progress_width, 6), border_radius=3)
+            screen.blit(self._render_text(pygame, f"STEP  {self.step} / {len(result.actions)}", 11,
+                                          (181, 194, 211)), (x, y + 18))
+            y += 40
             metrics = [("EXPANDED", f"{result.expanded:,}"),
                        ("GENERATED", f"{result.generated:,}"),
                        ("MAX FRONTIER", f"{result.max_frontier:,}"),
                        ("SEARCH TIME", f"{result.elapsed_seconds:.4f}s")]
             self._draw_metric_grid(pygame, screen, x, y, width, metrics)
-            y += 108
+            y += 100
         elif result:
             screen.blit(self._render_text(pygame, "No solution found", 17, (226, 132, 123)), (x, y))
-            y += 36
+            y += 32
             metrics = [("EXPANDED", f"{result.expanded:,}"), ("GENERATED", f"{result.generated:,}"),
                        ("MAX FRONTIER", f"{result.max_frontier:,}"),
                        ("SEARCH TIME", f"{result.elapsed_seconds:.4f}s")]
             self._draw_metric_grid(pygame, screen, x, y, width, metrics)
-            y += 108
+            y += 100
         elif result is None:
             screen.blit(self._render_text(pygame, "Choose a search strategy", 18,
                                           (220, 228, 238), bold=True), (x, y))
@@ -569,29 +641,40 @@ class SokobanGUI:
             y += 20
             screen.blit(self._render_text(pygame, "C compares all registered solvers.", 11,
                                           (152, 166, 184)), (x, y))
-            y += 51
+            y += 45
 
         level_results = [
             (key, item) for (level, key), item in self.results.items()
             if level == self.level_index
         ]
         if len(level_results) > 1:
-            screen.blit(self._render_text(pygame, "ALGORITHM COMPARISON", 12,
+            screen.blit(self._render_text(pygame, "ALGORITHM COMPARISON", 11,
                                           (226, 232, 240), bold=True), (x, y))
-            y += 22
-            # Fixed offsets keep the columns lined up with proportional fonts.
-            col_offsets = (0, 45, 95, 145, 195, 245)
+            y += 18
+            # Proportional column offsets across the available card width
+            col_ratios = (0.0, 0.19, 0.36, 0.53, 0.70, 0.85)
+            col_offsets = [int(width * r) for r in col_ratios]
+
             for label, offset in zip(("ALG", "COST", "EXP", "GEN", "OPEN", "TIME"), col_offsets):
-                screen.blit(self._render_text(pygame, label, 9, (143, 161, 183)), (x + offset, y))
-            y += 17
+                screen.blit(self._render_text(pygame, label, 9, (143, 161, 183), bold=True), (x + offset, y))
+            y += 16
+
             minimum_cost = min((item.cost for _, item in level_results
                                 if item.found and item.cost is not None), default=None)
-            for key, item in sorted(level_results, key=lambda entry: entry[0]):
+
+            # Keep solvers in a consistent logical order: BFS, A*h1, A*h2, A*h3
+            solver_order = list(self.solvers.keys())
+            sorted_results = sorted(
+                level_results,
+                key=lambda entry: solver_order.index(entry[0]) if entry[0] in solver_order else 99
+            )
+
+            for key, item in sorted_results:
                 active = key == selected_key
-                row = pygame.Rect(x - 5, y - 2, width + 10, 20)
+                row_rect = pygame.Rect(x - 6, y - 2, width + 12, 18)
                 if active:
-                    pygame.draw.rect(screen, (45, 63, 85), row, border_radius=5)
-                # Use the short label defined above.
+                    pygame.draw.rect(screen, (45, 63, 85), row_rect, border_radius=4)
+
                 short_name = _SOLVER_SHORT_NAMES.get(key, key[:6])
                 if item.incomplete:
                     cost_label, marker = "LIMIT", ""
@@ -601,17 +684,28 @@ class SokobanGUI:
                     cost_label = str(item.cost)
                     marker = "*" if item.cost == minimum_cost else (
                         "!" if minimum_cost is not None and item.cost > minimum_cost else "")
+
                 row_color = (245, 247, 250) if active else (181, 194, 211)
-                cells = (short_name, f"{cost_label}{marker}",
-                         str(item.expanded), str(item.generated),
-                         str(item.max_frontier), f"{item.elapsed_seconds:.3f}")
+                cells = (
+                    short_name,
+                    f"{cost_label}{marker}",
+                    self._fmt_num(item.expanded),
+                    self._fmt_num(item.generated),
+                    self._fmt_num(item.max_frontier),
+                    f"{item.elapsed_seconds:.2f}s",
+                )
                 for cell, offset in zip(cells, col_offsets):
                     screen.blit(self._render_text(pygame, cell, 9, row_color), (x + offset, y))
-                y += 21
-            screen.blit(self._render_text(pygame, "* best cost   ! higher than best", 9,
+                y += 19
+
+            screen.blit(self._render_text(pygame, "* optimal   ! suboptimal", 9,
                                           (143, 161, 183)), (x, y + 2))
-        screen.blit(self._render_text(pygame, "SPACE  play / pause     R  reset", 11,
-                                      (120, 139, 162)), (x, card.bottom - 28))
+
+        # Only draw footer hint if there is clearance at the bottom of the card
+        footer_y = card.bottom - 24
+        if y + 16 < footer_y:
+            screen.blit(self._render_text(pygame, "SPACE  play / pause     R  reset", 11,
+                                          (120, 139, 162)), (x, footer_y))
 
     def _render_text(self, pygame: object, text: str, size: int,
                      color: tuple[int, int, int], bold: bool = False) -> object:
