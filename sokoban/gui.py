@@ -73,7 +73,10 @@ class SokobanGUI:
             SokobanPuzzle.from_file(self.level_dir / f"level{i}.txt")
             for i in range(1, 8)
         ]
-        self.level_names = [f"Example {i}" for i in range(1, 8)]
+        self.level_names = [f"Example {i}" for i in range(1, 6)] + [
+            "Fig 7 Ex 1",
+            "Fig 7 Ex 2",
+        ]
         self.solvers = dict(SOLVERS)
         self.heuristics = dict(HEURISTICS)
         self.selected_algorithm = "BFS"
@@ -357,10 +360,11 @@ class SokobanGUI:
             return max(32, int(w * scale))
 
         # Row 1: 7 level buttons, algorithm buttons, heuristic buttons, deadlock toggle, overlay toggle
+        lvl_labels = [f"LVL {i}" for i in range(1, 6)] + ["F7 Ex 1", "F7 Ex 2"]
         buttons = [
             UIButton(
                 pygame.Rect(sx(18 + index * 64), 67, sw(58), 36),
-                f"LVL {index + 1}",
+                lvl_labels[index],
                 f"level:{index}",
                 index == self.level_index,
             )

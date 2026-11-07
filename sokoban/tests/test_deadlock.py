@@ -221,16 +221,16 @@ class IncrementalTests(unittest.TestCase):
     """Verify incremental deadlock check matches full check on all transitions."""
 
     def test_incremental_agrees_with_full(self):
-        """On transitions from valid non-deadlocked parents, incremental matches full check."""
+        """On transitions from valid non-deadlocked parents, incremental matches full check across all 7 levels."""
         root = Path(__file__).parents[1] / "levels"
-        for index in (1, 2, 3, 6, 7):
+        for index in range(1, 8):
             state = SokobanPuzzle.from_file(root / f"level{index}.txt")
             from collections import deque
 
             pending = deque([state])
             visited = {state}
             count = 0
-            while pending and count < 1000:
+            while pending and count < 500:
                 current = pending.popleft()
                 for action, successor in current.successorFunction():
                     if successor in visited:
@@ -277,33 +277,66 @@ class LevelEncodingTests(unittest.TestCase):
 
 
 class HeadlessGUISmokeTests(unittest.TestCase):
-    """Run a headless GUI test with SDL_VIDEODRIVER=dummy."""
+    """Run a comprehensive headless GUI test with SDL_VIDEODRIVER=dummy."""
 
     def test_headless_gui_lifecycle(self):
         os.environ["SDL_VIDEODRIVER"] = "dummy"
+        import pygame
+        pygame.init()
+        screen = pygame.display.set_mode((1200, 780))
+
         from sokoban.gui import SokobanGUI
 
         gui = SokobanGUI()
+        gui._load_tileset(pygame)
         self.assertEqual(len(gui.levels), 7)
+
+        # 1. Test cycling all levels 1 to 7
         for i in range(7):
-            gui._change_level(i)
+            gui._activate_button(f"level:{i}")
             self.assertEqual(gui.level_index, i)
 
-        # Toggle deadlock and overlay
+        # 2. Toggle deadlock pruning
         self.assertFalse(gui.use_deadlock)
-        gui._toggle_deadlock()
+        gui._activate_button("toggle_deadlock")
         self.assertTrue(gui.use_deadlock)
+        gui._activate_button("toggle_deadlock")
+        self.assertFalse(gui.use_deadlock)
 
+        # 3. Toggle overlay
         self.assertFalse(gui.show_overlay)
-        gui.show_overlay = True
+        gui._activate_button("toggle_overlay")
         self.assertTrue(gui.show_overlay)
 
-        # Solve level 1 synchronously via the solver function
-        solver = gui.solvers[gui._selected_key()]
-        res = solver(gui.levels[0])
+        # 4. Switch algorithms and heuristics
+        gui._activate_button("algorithm:A*")
+        self.assertEqual(gui.selected_algorithm, "A*")
+        gui._activate_button("heuristic:h2")
+        self.assertEqual(gui.selected_heuristic, "h2")
+        gui._activate_button("heuristic:h3")
+        self.assertEqual(gui.selected_heuristic, "h3")
+        gui._activate_button("algorithm:BFS")
+        self.assertEqual(gui.selected_algorithm, "BFS")
+
+        # 5. Solve on level 0 with BFS + deadlock
+        gui._toggle_deadlock()
+        gui._change_level(0)
+        key = gui._selected_key()
+        self.assertEqual(key, "BFS + deadlock")
+        res = gui.solvers[key](gui.levels[0])
         self.assertTrue(res.found)
         gui.results[gui._current_cache_key()] = res
         self.assertIsNotNone(gui._current_result())
+
+        # 6. Test rendering pipeline without errors
+        buttons = gui._layout_buttons(pygame, 1200)
+        self.assertGreaterEqual(len(buttons), 13)
+        gui._draw_controls(pygame, screen, buttons)
+        panel_x = min(820, screen.get_width() - 360)
+        gui._draw_board(pygame, screen, res.path[0], panel_x, screen.get_height())
+        gui._draw_info(pygame, screen, panel_x, res)
+        pygame.display.flip()
+        pygame.quit()
 
 
 if __name__ == "__main__":

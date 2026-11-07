@@ -43,8 +43,9 @@ def benchmark_all(
                     )
                 )
                 pruned = getattr(representative, "pruned", 0)
+                level_label = f"Fig 7 Ex {level_number - 5}" if level_number > 5 else f"Example {level_number}"
                 rows.append(
-                    f"| Example {level_number} | {key} | {cost} | {representative.expanded} | "
+                    f"| {level_label} | {key} | {cost} | {representative.expanded} | "
                     f"{representative.generated} | {representative.max_frontier} | {pruned} | {median_time:.6f} |"
                 )
                 if level_number in level_solutions and representative.found:
@@ -69,7 +70,8 @@ def benchmark_all(
 
     solutions_md = ["## Solutions for Figure 7 Examples\n"]
     for lvl in (6, 7):
-        solutions_md.append(f"### Example {lvl} (Figure 7)")
+        lvl_name = f"Fig 7 Ex {lvl - 5}"
+        solutions_md.append(f"### {lvl_name}")
         for key, (cost, iters, moves) in level_solutions[lvl].items():
             solutions_md.append(
                 f"- **{key}** (cost={cost}, iterations={iters}):\n  `{moves}`"
