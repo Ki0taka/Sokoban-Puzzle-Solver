@@ -110,3 +110,44 @@ OOOOOOOOOO
 tiles. The exact one-cell wall notches where the arms meet the central/lower
 corridor are ambiguous at the PDF resolution; this version models the broad
 cross outline and uses the enclosed corridor shown above.
+
+## Example 6 — Figure 7 Example 1 (two-chamber warehouse)
+
+A 7×7 grid. The left part is 2 columns wide with 3 targets along its left wall (rows 1, 3, 5).
+A one-cell doorway through the middle row joins it to the right chamber.
+The right chamber is 2 columns wide with 3 boxes stacked vertically in its left column (rows 2, 3, 4)
+and the player in the upper-right corner.
+
+```text
+OOOOOOO
+OS O RO
+O  OB O
+OS  B O
+O  OB O
+OS O  O
+OOOOOOO
+```
+
+**Uncertain cells:**
+- Row 1: Player at `(1, 5)`. The player tile could potentially have been at `(1, 4)`, but the visual alignment and prompt specification explicitly place the player in the top-right corner `(1, 5)` adjacent to the outer wall.
+- Row 3 Doorway: Exactly one cell wide at `(3, 3)`. The visual divider between the two rooms is solid walls except for this center corridor.
+
+## Example 7 — Figure 7 Example 2 (stepped room with cluster)
+
+An 8×6 grid with stepped perimeter walls. 4 targets arranged as a 3-wide horizontal row and 1 centered below.
+4 boxes with one placed to the upper right of the cluster and three side-by-side in the row below.
+The player begins at the bottom-right floor cell.
+
+```text
+OOOOOOOO
+OSSS OOO
+O S B  O
+O  BBB O
+OOOO  RO
+OOOOOOOO
+```
+
+**Uncertain cells:**
+- Row 1: Columns 5, 6, 7 are solid exterior walls (`OOO`). Column 4 is open floor (` `) allowing player traversal behind the boxes.
+- Row 4: Columns 0 to 3 are solid wall (`OOOO`). Floor begins at column 4 with the player at `(4, 6)`.
+- Enclosure: All playable floor tiles are fully enclosed by solid wall borders; flood fill from player `(4, 6)` stays inside the bounds.

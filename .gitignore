@@ -9,6 +9,7 @@ htmlcov/
 *.pdf
 *.md
 !results.md
+!results_part3.md
 !LEVEL_RECONSTRUCTIONS.md
 
 # Virtual environments

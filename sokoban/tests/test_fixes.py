@@ -19,7 +19,7 @@ class FixVerificationTests(unittest.TestCase):
     def test_astar_h1_matches_bfs_cost_on_all_levels(self):
         """A* with h1 should find the same cost as BFS on every level."""
         root = Path(__file__).parents[1] / "levels"
-        for index in range(1, 6):
+        for index in range(1, 8):
             initial = SokobanPuzzle.from_file(root / f"level{index}.txt")
             bfs_result = bfs(initial)
             astar_result = astar(initial, h1)
@@ -29,7 +29,7 @@ class FixVerificationTests(unittest.TestCase):
     def test_astar_h3_matches_bfs_cost_on_all_levels(self):
         """A* with h3 should find the same cost as BFS on every level."""
         root = Path(__file__).parents[1] / "levels"
-        for index in range(1, 6):
+        for index in range(1, 8):
             initial = SokobanPuzzle.from_file(root / f"level{index}.txt")
             bfs_result = bfs(initial)
             astar_result = astar(initial, h3)
@@ -38,10 +38,10 @@ class FixVerificationTests(unittest.TestCase):
 
     # h3 should stay below the remaining solution cost.
 
-    def test_h3_admissible_on_bfs_path_levels_1_to_4(self):
+    def test_h3_admissible_on_bfs_path_levels_1_to_7(self):
         """h3 should not overestimate along the BFS solution path."""
         root = Path(__file__).parents[1] / "levels"
-        for index in range(1, 5):
+        for index in range(1, 8):
             initial = SokobanPuzzle.from_file(root / f"level{index}.txt")
             result = bfs(initial)
             self.assertTrue(result.found)
@@ -52,12 +52,14 @@ class FixVerificationTests(unittest.TestCase):
                     f"h3 overestimates on level {index}, step {step}: "
                     f"h3={h}, remaining={remaining}")
 
+    test_h3_admissible_on_bfs_path_levels_1_to_4 = test_h3_admissible_on_bfs_path_levels_1_to_7
+
     # Check h1's consistency along a solution path.
 
     def test_h1_consistency_on_bfs_solution_path(self):
         """h1 should not drop by more than one move at a time."""
         root = Path(__file__).parents[1] / "levels"
-        for index in range(1, 6):
+        for index in range(1, 8):
             initial = SokobanPuzzle.from_file(root / f"level{index}.txt")
             result = bfs(initial)
             self.assertTrue(result.found)
@@ -77,6 +79,7 @@ class FixVerificationTests(unittest.TestCase):
         gui = SokobanGUI()
         gui.level_index = 0
         keys = list(gui.solvers)
+        self.assertEqual(len(keys), 9)
         # Set up the same batch used by _start_solve.
         batch = []
         for key in keys:
@@ -95,6 +98,26 @@ class FixVerificationTests(unittest.TestCase):
             self.assertNotIn(key, collected, f"Duplicate result for {key}")
             collected[key] = result
         self.assertEqual(set(collected), set(keys))
+        self.assertEqual(len(collected), 9)
+
+    def test_compare_registers_correct_number_of_solvers(self):
+        """Verify the compare function / GUI registers exactly 9 solvers."""
+        from sokoban.gui import SokobanGUI
+        gui = SokobanGUI()
+        self.assertEqual(len(gui.solvers), 9)
+        self.assertEqual(len(gui.solvers), len(SOLVERS))
+        expected_keys = {
+            "BFS",
+            "BFS + deadlock",
+            "A* (h1)",
+            "A* (h1) + deadlock",
+            "A* (h2)",
+            "A* (h2) + deadlock",
+            "A* (h3)",
+            "A* (h3) + deadlock",
+            "A* (h3) + exact dead squares",
+        }
+        self.assertEqual(set(gui.solvers.keys()), expected_keys)
 
     # Layouts parsed from the same text should compare equal.
 

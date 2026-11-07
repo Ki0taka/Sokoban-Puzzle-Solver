@@ -16,14 +16,14 @@ def main() -> None:
     parser.add_argument("--benchmark", action="store_true", help="benchmark all registered solvers and write results.md")
     parser.add_argument("--algorithm", action="append", choices=tuple(SOLVERS),
                         help="solver to use in CLI mode (repeat to compare; defaults to all)")
-    parser.add_argument("--level", type=int, default=1, choices=range(1, 6), help="level number")
+    parser.add_argument("--level", type=int, default=1, choices=range(1, 8), help="level number")
     args = parser.parse_args()
     if args.benchmark:
         print(benchmark_all())
         return
     if args.cli:
         algorithms = args.algorithm or list(SOLVERS)
-        for number in range(1, 6):
+        for number in range(1, 8):
             path = LEVEL_DIR / f"level{number}.txt"
             state = SokobanPuzzle.from_file(path)
             print(f"\nLevel {number}:\n{state}")
