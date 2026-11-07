@@ -67,6 +67,48 @@ def h3(state: SokobanPuzzle) -> float:
 
     The push-distance matrix was precomputed once when the shared layout was
     parsed. A minimum one-to-one box/target assignment lower-bounds the pushes
+    still required. If a push distance is infinite (such as for deadlocked boxes),
+    it falls back to Manhattan distance to keep the heuristic finite while
+    remaining admissible. A further walk lower bound is the distance to the nearest
+    box minus one, because at least that many player steps are needed to stand
+    adjacent before the first push. We measure approach to *any* box, including
+    one already on a target: using only unplaced boxes would not be admissible
+    when an already-placed box can be pushed first. These move costs are
+    disjoint (walk before the first push versus pushes), so their sum is
+    admissible.
+    """
+    if state.isGoal():
+        return 0.0
+    layout = state.layout
+    targets_sorted = tuple(sorted(layout.targets))
+    boxes = tuple(sorted(state.boxes))
+    cost_rows: list[tuple[float, ...]] = []
+    for box in boxes:
+        raw = layout.push_distances[box]
+        row: list[float] = []
+        for i, dist in enumerate(raw):
+            if math.isinf(dist):
+                # Finite fallback: Manhattan distance to this target.
+                target = targets_sorted[i]
+                row.append(float(abs(box[0] - target[0]) + abs(box[1] - target[1])))
+            else:
+                row.append(dist)
+        cost_rows.append(tuple(row))
+
+    push_lower_bound = _min_assignment(tuple(cost_rows))
+    # Standing next to a box makes this zero; a push can lower it by at most one.
+    approach = max(0, min(
+        abs(state.player[0] - box[0]) + abs(state.player[1] - box[1])
+        for box in boxes
+    ) - 1)
+    return push_lower_bound + approach
+
+
+def h3_exact(state: SokobanPuzzle) -> float:
+    """Estimate the remaining pushes using reverse-pull dead-square pruning through infinity.
+
+    The push-distance matrix was precomputed once when the shared layout was
+    parsed. A minimum one-to-one box/target assignment lower-bounds the pushes
     still required. A further walk lower bound is the distance to the nearest
     box minus one, because at least that many player steps are needed to stand
     adjacent before the first push. We measure approach to *any* box, including
@@ -99,5 +141,5 @@ HEURISTICS: Mapping[str, Heuristic] = MappingProxyType({"h1": h1, "h2": h2, "h3"
 HEURISTIC_DESCRIPTIONS: Mapping[str, str] = MappingProxyType({
     "h1": "One lower-bound push for each box not on a target.",
     "h2": "Twice the unplaced boxes plus nearest-target Manhattan distances; not admissible.",
-    "h3": "Minimum wall-aware box/target push assignment plus a player approach lower bound.",
+    "h3": "Minimum wall-aware box/target push assignment (finite fallback) plus a player approach lower bound.",
 })

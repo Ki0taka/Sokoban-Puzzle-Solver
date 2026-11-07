@@ -5,7 +5,7 @@ from collections import deque
 from pathlib import Path
 import unittest
 
-from sokoban.heuristics import h1, h2, h3
+from sokoban.heuristics import h1, h2, h3, h3_exact
 from sokoban.sokoban_puzzle import SokobanPuzzle
 
 
@@ -33,7 +33,9 @@ class HeuristicTests(unittest.TestCase):
         deadlock = SokobanPuzzle.from_lines([
             "OOOOOO", "OB  SO", "O R  O", "OOOOOO",
         ])
-        self.assertTrue(math.isinf(h3(deadlock)))
+        self.assertTrue(math.isfinite(h3(deadlock)))
+        self.assertGreater(h3(deadlock), 0)
+        self.assertTrue(math.isinf(h3_exact(deadlock)))
         root = SokobanPuzzle.from_file(Path(__file__).parents[1] / "levels" / "level1.txt")
         pending = deque([root])
         visited = {root}

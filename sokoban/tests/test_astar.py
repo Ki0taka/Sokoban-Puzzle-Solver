@@ -48,6 +48,11 @@ class AStarTests(unittest.TestCase):
         result = astar(deadlock, h3)
         self.assertFalse(result.found)
 
+        # h3_exact prunes dead squares immediately via infinity.
+        from sokoban.heuristics import h3_exact
+        result = astar(deadlock, h3_exact)
+        self.assertFalse(result.found)
+
     def test_inconsistent_h2_reopens_closed_states_and_finds_solution(self):
         """The bundled third example exercises A*'s Closed-state re-opening."""
         initial = SokobanPuzzle.from_file(Path(__file__).parents[1] / "levels" / "level3.txt")
@@ -59,7 +64,7 @@ class AStarTests(unittest.TestCase):
     def test_h1_and_h3_match_bfs_cost_on_every_bundled_level(self):
         """Admissible h1 and h3 preserve BFS's optimal solution costs."""
         root = Path(__file__).parents[1] / "levels"
-        for index in range(1, 6):
+        for index in range(1, 8):
             initial = SokobanPuzzle.from_file(root / f"level{index}.txt")
             optimal = bfs(initial)
             for heuristic in (h1, h3):
@@ -70,7 +75,7 @@ class AStarTests(unittest.TestCase):
     def test_h2_paths_are_valid_without_assuming_optimality(self):
         """h2 is intentionally not constrained to BFS's cost."""
         root = Path(__file__).parents[1] / "levels"
-        for index in range(1, 6):
+        for index in range(1, 8):
             initial = SokobanPuzzle.from_file(root / f"level{index}.txt")
             result = astar(initial, h2)
             self.assertTrue(result.found)
