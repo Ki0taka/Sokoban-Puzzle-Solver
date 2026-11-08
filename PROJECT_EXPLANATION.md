@@ -1,6 +1,8 @@
 # Sokoban Puzzle Solver — Detailed Project Explanation
 
-This document walks through the entire project **step by step**, explaining every module, every data structure, and the full execution flow from start to finish.
+This document explains the whole project: how a level is modeled, how the search algorithms (BFS and A\*) work, how the heuristics are built, and — in the most detail — how **deadlock detection** is computed, cached, plugged into the searches, visualized in the GUI, and what it can and cannot detect.
+
+If you only have five minutes, read [Section 1](#1-project-overview), [Section 11 (deadlocks)](#11-deadlock-detection-deadlockpy), and the [Key Concepts Summary](#17-key-concepts-summary).
 
 ---
 
@@ -8,900 +10,817 @@ This document walks through the entire project **step by step**, explaining ever
 
 1. [Project Overview](#1-project-overview)
 2. [Project Structure](#2-project-structure)
-3. [Step 1 — Entry Point (`main.py`)](#3-step-1--entry-point-mainpy)
-4. [Step 2 — Level Files (`sokoban/levels/`)](#4-step-2--level-files-sokobanlevels)
-5. [Step 3 — The Puzzle Model (`sokoban_puzzle.py`)](#5-step-3--the-puzzle-model-sokoban_puzzlepy)
-6. [Step 4 — The Search Node (`node.py`)](#6-step-4--the-search-node-nodepy)
-7. [Step 5 — BFS Search Algorithm (`search.py`)](#7-step-5--bfs-search-algorithm-searchpy)
-8. [Step 6 — A\* Search Algorithm (`search.py`)](#8-step-6--a-search-algorithm-searchpy)
-9. [Step 7 — Heuristic Functions (`heuristics.py`)](#9-step-7--heuristic-functions-heuristicspy)
-10. [Step 8 — How A\* Behaves with Each Heuristic](#10-step-8--how-a-behaves-with-each-heuristic)
-11. [Step 9 — The GUI (`gui.py`)](#11-step-9--the-gui-guipy)
-12. [Step 10 — Tests](#12-step-10--tests)
-13. [Full Execution Flow — End to End](#13-full-execution-flow--end-to-end)
-14. [Key Concepts Summary](#14-key-concepts-summary)
+3. [Entry Point (`main.py`)](#3-entry-point-mainpy)
+4. [Level Files (`sokoban/levels/`)](#4-level-files-sokobanlevels)
+5. [The Puzzle Model (`sokoban_puzzle.py`)](#5-the-puzzle-model-sokoban_puzzlepy)
+6. [The Search Node (`node.py`)](#6-the-search-node-nodepy)
+7. [BFS (`search.py`)](#7-bfs-searchpy)
+8. [A\* (`search.py`)](#8-a-searchpy)
+9. [Heuristics (`heuristics.py`)](#9-heuristics-heuristicspy)
+10. [Push Distances and Dead Squares (computed at parse time)](#10-push-distances-and-dead-squares-computed-at-parse-time)
+11. [Deadlock Detection (`deadlock.py`)](#11-deadlock-detection-deadlockpy)
+12. [How Deadlock Pruning Plugs Into the Searches](#12-how-deadlock-pruning-plugs-into-the-searches)
+13. [Performance Comparison](#13-performance-comparison)
+14. [The GUI (`gui.py`)](#14-the-gui-guipy)
+15. [Test Suite](#15-test-suite)
+16. [Full Execution Flow](#16-full-execution-flow)
+17. [Key Concepts Summary](#17-key-concepts-summary)
 
 ---
 
 ## 1. Project Overview
 
-This project is a **Sokoban puzzle solver** built in Python. Sokoban is a classic puzzle game where a player (`R`) must push boxes (`B`) onto target positions (`S`) inside a warehouse bounded by walls (`O`). The player can only **push** boxes (not pull), and can only push **one box at a time** into an empty space.
+This is a **Sokoban solver** written in Python for Master 1 Visual Computing (USTHB). In Sokoban a warehouse keeper (`R`) pushes boxes (`B`) onto storage targets (`S`) inside a walled maze (`O`). Two rules make the game hard:
 
-The project:
-- **Models** the Sokoban puzzle as a state-space search problem.
-- **Solves** it using **Breadth-First Search (BFS)** and **A\* Search** with three heuristics (h1, h2, h3).
-- **Visualizes** the solving process through a **Pygame GUI** with playback controls.
-- Includes 5 bundled levels and a full **test suite**.
+- The keeper can only **push**, never pull.
+- The keeper can push only **one box at a time**, into a free cell.
+
+Because boxes can never be pulled back, a single careless push can make a puzzle **unsolvable forever**. Detecting and avoiding such positions is what the deadlock part of the project is about.
+
+The project covers three assignment parts:
+
+| Part | Topic | What was built |
+|---|---|---|
+| 1 | Modeling and uninformed search | Immutable state model, level parsing and enclosure validation, BFS |
+| 2 | Informed search | A\* with Open/Closed sets and re-opening, heuristics `h1`, `h2`, `h3` |
+| 3 | Deadlock detection | Corner and line deadlocks, pruning inside BFS and A\*, GUI overlay, benchmark over 7 levels |
+
+### Terminology used throughout
+
+| Term | Meaning |
+|---|---|
+| **State** | The player position plus the set of box positions. Walls and targets are fixed and shared. |
+| **Move / action** | One of `UP`, `DOWN`, `LEFT`, `RIGHT`. Each costs 1. A move that walks into a box is a **push**. |
+| **Expanded** | A state taken off the frontier and whose successors were generated. |
+| **Generated** | Every successor produced, including duplicates and pruned ones (plus the root). |
+| **Deadlock** | A state from which no solution exists (`h*(s) = ∞`). |
+| **Dead cell / dead square** | A cell where a box can never reach any target once it stands there. |
+| **Pruned** | A generated successor discarded because a box was pushed onto a deadlock cell. |
+| **Admissible heuristic** | Never overestimates the true remaining cost (`h ≤ h*`). |
+| **Consistent heuristic** | `h(n) ≤ 1 + h(n')` for every move `n → n'`. |
 
 ---
 
 ## 2. Project Structure
 
-```
-Projet_1/
-├── main.py                        # Root entry point (convenience wrapper)
-├── README.md                      # Project documentation
-├── Project 1 Part 1.pdf           # Original assignment PDF
+```text
+sokoban/
+├── main.py                        # Root entry point (convenience launcher)
+├── README.md                      # Project documentation and benchmark report
+├── results_part3.md               # Part 3 benchmark data and solution sequences
+├── LEVEL_RECONSTRUCTIONS.md       # ASCII reconstruction notes for all figures
+├── PROJECT_EXPLANATION.md         # This file
 └── sokoban/                       # Main Python package
-    ├── __init__.py                 # Package init — exports SokobanPuzzle
-    ├── sokoban_puzzle.py           # Puzzle state model (core logic)
-    ├── node.py                     # Search tree node
-    ├── search.py                   # BFS + A* algorithms + SearchResult
-    ├── heuristics.py               # h1, h2, h3 heuristic functions
-    ├── benchmark.py                # Benchmark runner (results.md generator)
-    ├── main.py                     # CLI/GUI launcher
-    ├── gui.py                      # Pygame graphical interface
-    ├── levels/                     # Bundled puzzle levels
-    │   ├── level1.txt
-    │   ├── level2.txt
-    │   ├── level3.txt
-    │   ├── level4.txt
-    │   └── level5.txt
-    └── tests/
-        ├── test_sokoban.py         # Core model + BFS tests
-        ├── test_astar.py           # A* correctness and optimality tests
-        ├── test_heuristics.py      # Heuristic admissibility/consistency tests
-        └── test_fixes.py           # Integration and regression tests
+    ├── __init__.py                # Exports SokobanPuzzle
+    ├── sokoban_puzzle.py          # State model, parsing, enclosure, push distances, dead squares
+    ├── node.py                    # Search tree node (g, f, path/solution reconstruction)
+    ├── deadlock.py                # Corner/line deadlock detection and per-layout cache
+    ├── heuristics.py              # h1, h2, h3 and h3_exact (none of h1-h3 use deadlock info)
+    ├── search.py                  # BFS, A*, SearchResult, SOLVERS registry
+    ├── benchmark.py               # Automated 7-level benchmark runner
+    ├── main.py                    # CLI / GUI / benchmark dispatcher
+    ├── gui.py                     # Pygame interface with deadlock toggle and overlay
+    ├── assets/tileset.png         # Sprite sheet used by the GUI (optional; falls back to drawn shapes)
+    ├── levels/                    # level1.txt ... level7.txt
+    └── tests/                     # 56 unit tests
+        ├── test_sokoban.py        # Model and transition validation
+        ├── test_astar.py          # A* correctness, path replay, optimality
+        ├── test_heuristics.py     # Heuristic admissibility and consistency
+        ├── test_deadlock.py       # Corner/line detection, soundness, GUI smoke
+        └── test_fixes.py          # Regression and solver-registry checks
 ```
+
+**Dependency direction** (each arrow means "imports"):
+
+```text
+gui.py ───────► search.py ───► deadlock.py ───► sokoban_puzzle.py
+   │               │  │
+   │               │  └──────► heuristics.py ──► sokoban_puzzle.py
+   │               └─────────► node.py ────────► sokoban_puzzle.py
+   └─────────► deadlock.py (overlay only), heuristics.py (button names)
+```
+
+`sokoban_puzzle.py` imports nothing from the rest of the package, so the model can be tested on its own.
 
 ---
 
-## 3. Step 1 — Entry Point (`main.py`)
+## 3. Entry Point (`main.py`)
 
-### Root `main.py` (project root)
+The root `main.py` simply calls `sokoban.main.main()`.
 
-```python
-from sokoban.main import main
+`sokoban/main.py` parses options with `argparse`:
 
-if __name__ == "__main__":
-    main()
-```
+| Command | Effect |
+|---|---|
+| `python main.py` | Opens the Pygame GUI at level 1 |
+| `python main.py --level N` | Opens the GUI at level `N` (1–7) |
+| `python main.py --cli` | Solves levels 1–7 in the console with **every** registered solver |
+| `python main.py --cli --algorithm "A* (h3) + deadlock"` | Same, but only with the named solver. `--algorithm` can be repeated to compare several. |
+| `python main.py --benchmark` | Runs the benchmark over all solvers and levels and writes the report |
 
-This is a **convenience wrapper**. It simply imports and calls the real `main()` function from the `sokoban` package. You run the project with:
+In CLI mode each solver prints `cost`, `expanded`, `generated`, `max_frontier`, time, and the action sequence (or "No solution found").
 
-```sh
-python main.py          # Launches the Pygame GUI
-python main.py --cli    # Solves all 5 levels in the terminal
-```
-
-### `sokoban/main.py` (package entry point)
-
-This module does the actual work:
-
-1. **Parses command-line arguments** using `argparse`:
-   - `--cli` → run in console mode (solve all 5 levels and print results).
-   - `--level N` → choose starting level for the GUI (1–5).
-
-2. **CLI mode** (`--cli`):
-   - Loops through levels 1–5.
-   - Loads each level from a `.txt` file using `SokobanPuzzle.from_file()`.
-   - Runs **BFS**, **A\*(h1)**, **A\*(h2)**, and **A\*(h3)** on each level.
-   - Prints: cost, expanded nodes, generated nodes, max frontier size, search time, and the solution action sequence for each algorithm.
-
-3. **GUI mode** (default):
-   - Imports `SokobanGUI` (lazy import to avoid requiring pygame in CLI mode).
-   - Calls `SokobanGUI().run(args.level)`.
+The solver names accepted by `--algorithm` are the keys of the `SOLVERS` registry (see [Section 8.5](#85-the-solvers-registry)).
 
 ---
 
-## 4. Step 2 — Level Files (`sokoban/levels/`)
+## 4. Level Files (`sokoban/levels/`)
 
-Each level is a plain text file using this encoding:
+Levels are plain-text grids:
 
 | Symbol | Meaning |
-|--------|---------|
-| `O`    | Wall |
-| `R`    | Player |
-| `B`    | Box |
-| `S`    | Target (storage location) |
+|:---:|---|
+| `O` | Wall |
+| `R` | Player |
+| `B` | Box |
+| `S` | Target |
 | ` ` (space) | Empty floor |
-| `.`    | Player standing on a target |
-| `*`    | Box placed on a target (goal state for that box) |
+| `.` | Player standing on a target |
+| `*` | Box standing on a target |
 
-### Example — Level 1 (`level1.txt`):
+- Levels 1–5 are the five examples of Figure 4 (Part 1).
+- Level 6 is **Fig 7 Ex 1**: a 7×7 two-chamber room with a central doorway.
+- Level 7 is **Fig 7 Ex 2**: an 8×6 stepped warehouse with a cluster of 4 boxes and 4 targets.
 
-```
-OOOOOOOO
-OS B   O
-O OO R O
-O      O
-O      O
-O      O
-O      O
-OOOOOOOO
-```
-
-Reading this grid:
-- The board is 8×8, surrounded by walls (`O`).
-- There is **1 target** (`S`) at position (row 1, col 1).
-- There is **1 box** (`B`) at position (row 1, col 3).
-- The **player** (`R`) is at position (row 2, col 5).
-- The goal is to push the box onto the target.
+Rows shorter than the widest row are padded with walls on the right.
 
 ---
 
-## 5. Step 3 — The Puzzle Model (`sokoban_puzzle.py`)
+## 5. The Puzzle Model (`sokoban_puzzle.py`)
 
-This is the **heart of the project**. It defines how the Sokoban puzzle is represented and how states transition.
+### 5.1 Flyweight design: `BoardLayout` + `SokobanPuzzle`
 
-### 5.1 Constants and Types
+A level has **static** data (walls, targets, floor shape) and **dynamic** data (player, boxes). Search creates hundreds of thousands of states, so the static data is stored once and shared.
 
-```python
-Position = tuple[int, int]                      # (row, col)
-UP, DOWN, LEFT, RIGHT = "UP", "DOWN", "LEFT", "RIGHT"
-ACTIONS = ((UP, (-1, 0)), (DOWN, (1, 0)), (LEFT, (0, -1)), (RIGHT, (0, 1)))
-```
+| Class | Holds | Notes |
+|---|---|---|
+| `BoardLayout` (frozen dataclass) | `rows`, `width`, `height`, `walls`, `targets`, plus `walkable`, `push_distances`, `dead_squares` | Only `rows/width/height/walls/targets` take part in `==` and `hash` (the other three use `compare=False, hash=False`). |
+| `SokobanPuzzle` | `layout` (shared reference), `player` (tuple), `boxes` (`frozenset` of tuples) | Uses `__slots__` and blocks attribute changes, so states are immutable and hashable. |
 
-- `Position` is a `(row, col)` tuple.
-- `ACTIONS` maps each direction name to a `(Δrow, Δcol)` delta vector.
+Why that `compare=False` detail matters: `BoardLayout` is used as a **dictionary key** by the deadlock cache. Equality is decided by the cheap geometric fields, not by the large precomputed tables.
 
-### 5.2 `BoardLayout` — Static Board Data
+### 5.2 Parsing and validation (`_parse_lines`)
 
-```python
-@dataclass(frozen=True)
-class BoardLayout:
-    rows: tuple[str, ...]            # Normalized static rows containing walls and floor
-    width: int                        # Number of columns
-    height: int                       # Number of rows
-    walls: frozenset[Position]        # Set of wall positions
-    targets: frozenset[Position]      # Set of target positions
-```
+1. Reject unknown symbols; pad short rows with walls.
+2. Collect walls, targets, boxes, and the player. Require **exactly one player** and **equal numbers of boxes and targets**.
+3. **Flood-fill** (BFS) from the player over non-wall cells.
+   - If the fill touches the grid border → `ValueError("level is not enclosed")`.
+   - If any box or target is outside the filled region → `ValueError`.
+4. Floor cells that the fill did not reach are converted into walls. After this step `layout.walkable` is exactly the playable region.
+5. Precompute **push distances** and **dead squares** (Section 10). This happens once per level, not once per state.
 
-This stores the **immutable parts** of the board — the walls and targets never change during gameplay. It is created **once** when a level is loaded and **shared** across all successor states. This is a key optimization: instead of duplicating the entire board for every state in the search, only the player and box positions change.
+### 5.3 Successor function
 
-### 5.3 `SokobanPuzzle` — A Single Game State
+`successorFunction()` returns a **list** of `(action, new_state)` pairs. For each of the four directions:
 
-A `SokobanPuzzle` represents **one snapshot** of the game. It contains:
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `layout`  | `BoardLayout` | Shared reference to static board data |
-| `player`  | `Position` | Current player `(row, col)` |
-| `boxes`   | `frozenset[Position]` | Current set of box positions |
-
-#### Construction
-
-There are **two ways** to create a `SokobanPuzzle`:
-
-1. **From text lines** (initial loading):
-   ```python
-   state = SokobanPuzzle.from_lines(["OOOOOO", "ORBS O", "OOOOOO"])
-   state = SokobanPuzzle.from_file("sokoban/levels/level1.txt")
-   ```
-   This calls `_parse_lines()` which:
-   - Strips line endings.
-   - Validates all symbols are in `{R, O, ' ', S, B, ., *}`.
-   - Pads ragged rows with walls so all rows have equal width.
-   - Extracts walls, targets, player position, and box positions.
-   - Validates exactly **1 player** and **equal box/target counts**.
-
-2. **From internal constructor** (successor generation):
-   ```python
-   SokobanPuzzle(layout=self.layout, player=new_pos, boxes=new_boxes)
-   ```
-   Used by `successorFunction()` to create child states efficiently by reusing the shared `BoardLayout`.
-
-#### `isGoal()` — Goal Test
+1. Compute the adjacent cell. If it is a wall (or outside the grid), skip the direction.
+2. If the adjacent cell holds a box, compute the cell beyond it. If that cell is a wall or holds another box, the push is illegal; skip. Otherwise the box moves one cell.
+3. Build the successor with `_from_successor`, which reuses the shared layout and **skips re-validation** (a speed optimization for internal states).
 
 ```python
-def isGoal(self) -> bool:
-    return self.boxes == self.layout.targets
-```
-
-The puzzle is solved when every box position matches a target position. Since both are `frozenset`s, this is a simple set equality check.
-
-#### `successorFunction()` — Generating Legal Moves
-
-This is the **transition function** that generates all reachable states from the current one:
-
-```python
-def successorFunction(self) -> list[tuple[str, SokobanPuzzle]]:
-```
-
-For each of the 4 directions (UP, DOWN, LEFT, RIGHT):
-
-1. Compute the **adjacent cell** (where the player would move to).
-2. If the adjacent cell is a **wall** or out of bounds → skip (illegal move).
-3. If the adjacent cell is **empty** → the player moves there (simple move).
-4. If the adjacent cell contains a **box**:
-   - Compute the cell **beyond** the box (where the box would be pushed to).
-   - If beyond is a wall, out of bounds, or contains another box → skip (can't push).
-   - Otherwise → the player moves to the box's position, and the box moves to beyond.
-
-Each legal move produces a new `SokobanPuzzle` with:
-- Updated `player` position.
-- Updated `boxes` frozenset (only if a push occurred).
-- Same shared `layout`.
-
-#### `__eq__` and `__hash__` — State Identity
-
-```python
-def __eq__(self, other):
-    return (self.layout == other.layout and
-            self.player == other.player and
-            self.boxes == other.boxes)
-
-def __hash__(self):
-    return hash((self.layout, self.player, self.boxes))
-```
-
-Two states are equal if they share the same board layout, player position, and box positions. This is **essential** for graph search — it allows the BFS to detect already-visited states using sets.
-
-#### `__str__()` — Board Rendering
-
-Reconstructs the board from static walls and floor, then overlays targets and the current player and box positions, using composite symbols (`.` for player-on-target, `*` for box-on-target). A previous version copied the original text rows and left stale player or box characters behind after moves; rebuilding from static cells fixes that ghost-symbol bug and makes successor states round-trip through the text parser.
-
----
-
-## 6. Step 4 — The Search Node (`node.py`)
-
-The `Node` class wraps a `SokobanPuzzle` state with search metadata to form a **search tree**.
-
-```python
-class Node:
-    state: SokobanPuzzle     # The puzzle state at this node
-    parent: Node | None      # Link to the parent node (None for root)
-    action: str | None       # The action that led here ("UP", "DOWN", etc.)
-    g: int                   # Path cost from root (number of moves)
-```
-
-### Key Methods
-
-| Method | Purpose |
-|--------|---------|
-| `getPath()` | Walk the parent chain back to root, return list of states |
-| `getSolution()` | Walk the parent chain back to root, return list of actions |
-| `expand()` | Call `state.successorFunction()`, wrap each child in a new `Node` |
-
-#### `getPath()` — Trace the Solution States
-
-```python
-def getPath(self) -> list[SokobanPuzzle]:
-    path = []
-    node = self
-    while node is not None:
-        path.append(node.state)
-        node = node.parent
-    path.reverse()
-    return path
-```
-
-Follows parent pointers from the goal node up to the root, collecting every state along the way. After reversing, you get the sequence: `[initial_state, state_after_move_1, ..., goal_state]`.
-
-#### `getSolution()` — Trace the Solution Actions
-
-Same idea, but collects the `action` strings instead of states. Returns something like `["RIGHT", "DOWN", "LEFT", "DOWN"]`.
-
-#### `expand()` — Generate Children
-
-```python
-def expand(self) -> list[Node]:
-    return [Node(state, self, action) for action, state in self.state.successorFunction()]
-```
-
-Calls the puzzle's successor function and wraps each `(action, new_state)` pair in a `Node`, linking back to `self` as the parent.
-
----
-
-## 7. Step 5 — BFS Search Algorithm (`search.py`)
-
-### 7.1 `SearchResult` — Output Container
-
-```python
-@dataclass
-class SearchResult:
-    solution: Node | None           # The goal node (None if unsolvable)
-    actions: list[str]              # Sequence of actions to reach the goal
-    path: list[SokobanPuzzle]       # Sequence of states from start to goal
-    cost: int | None                # Number of moves in the solution
-    expanded: int                   # How many nodes were popped from the frontier
-    generated: int                  # Total child nodes created (including duplicates)
-    max_frontier: int               # Peak size of the frontier queue
-    elapsed_seconds: float          # Wall-clock search time
-```
-
-### 7.2 `bfs()` — Breadth-First Search (Graph Search)
-
-```python
-def bfs(initial_state: SokobanPuzzle) -> SearchResult:
-```
-
-This implements **graph-search BFS** — the standard textbook algorithm for finding the shortest path in an unweighted graph.
-
-#### Step-by-step walkthrough:
-
-```
-1. START TIMER
-2. Create root Node from initial_state
-3. Initialize:
-   - frontier       = FIFO queue containing [root]
-   - frontier_states = set containing {initial_state}  (for O(1) membership test)
-   - explored        = empty set
-   - generated       = 1  (the root counts)
-   - expanded        = 0
-4. If initial_state is already the goal → return immediately
-
-5. WHILE frontier is not empty:
-   a. Pop the FRONT node from the queue (FIFO order)
-   b. Remove its state from frontier_states
-   c. Add its state to explored
-   d. expanded += 1
-
-   e. For each child in node.expand():
-      - generated += 1
-      - If child.state is in explored OR frontier_states → SKIP (already seen)
-      - If child.state.isGoal() → FOUND! Save solution, clear frontier, break
-      - Otherwise → add child to frontier and frontier_states
-
-   f. Update max_frontier
-
-6. STOP TIMER
-7. Return SearchResult with solution (or None if frontier emptied)
-```
-
-#### Why BFS guarantees optimality:
-
-BFS explores states **level by level** — all states reachable in 1 move before any state reachable in 2 moves, and so on. Since every move has **unit cost** (cost = 1), the first time BFS reaches the goal state, it has found the **shortest** path.
-
-#### Why graph search (not tree search):
-
-Without the `explored` set, BFS would revisit states it has already processed, leading to:
-- **Infinite loops** (moving back and forth).
-- **Exponential blowup** in memory and time.
-
-The `explored` set ensures each state is expanded at most once. The `frontier_states` set prevents adding duplicate states to the queue.
-
-#### Performance characteristics for bundled levels:
-
-| Level | Solution cost | Expanded | Generated | Max Frontier | Time |
-|-------|--------------|----------|-----------|-------------|------|
-| 1     | 4            | 11       | 32        | 5           | ~0.2ms |
-| 2     | 29           | 1,079    | 3,246     | 89          | ~13ms |
-| 3     | 20           | 1,854    | 5,163     | 244         | ~19ms |
-| 4     | 19           | 3,446    | 9,969     | 955         | ~38ms |
-| 5     | 30           | 315,127  | 1,029,632 | 41,050      | ~3.2s |
-
----
-
-## 8. Step 6 — A\* Search Algorithm (`search.py`)
-
-A\* is an **informed** graph-search algorithm that uses a heuristic function $h(n)$ to estimate the remaining cost from any state $n$ to the goal. It expands nodes in order of **$f(n) = g(n) + h(n)$**, where $g(n)$ is the actual path cost from the start.
-
-### 8.1 How A\* Works (Graph Search)
-
-The implementation follows the lecture's **Open/Closed** framework:
-
-```
-1. START TIMER
-2. Create root Node from initial_state, compute f(root) = 0 + h(initial_state)
-3. Initialize:
-   - Open (priority queue)  = min-heap containing [root], ordered by (f, h, insertion_order)
-   - open_nodes             = dict {initial_state → root}   (for O(1) lookup)
-   - closed_nodes           = empty dict                     (expanded states)
-   - generated = 1, expanded = 0, reopened = 0
-
-4. If initial_state is already the goal → return immediately
-5. If f(root) = ∞ (dead state detected by heuristic) → return no solution
-
-6. WHILE Open is not empty:
-   a. Pop the node with LOWEST f from the heap
-   b. If this node was superseded by a better one (lazy deletion check) → skip
-   c. Remove from open_nodes, add to closed_nodes
-   d. **Goal test**: If current.state.isGoal() → FOUND! Return solution
-   e. expanded += 1
-
-   f. For each successor of current:
-      - Create child Node, compute f(child) = g(child) + h(child.state)
-      - If f(child) = ∞ → skip (proven dead state)
-      - If child.state is in Open with a LOWER or equal f → skip
-      - If child.state is in Open with a HIGHER f → REPLACE (lazy: update dict, push new heap entry)
-      - If child.state is in Closed with a LOWER or equal f → skip
-      - If child.state is in Closed with a HIGHER f → REOPEN (remove from Closed, add to Open, reopened += 1)
-      - Otherwise → add to Open
-
-7. STOP TIMER
-8. Return SearchResult (or None if Open emptied)
-```
-
-### 8.2 Key Implementation Details
-
-#### Priority Queue with Lazy Deletion
-
-The Open list is a **min-heap** of `(f, h, insertion_order, node)` tuples:
-- **`f`**: primary sort key — lower f is expanded first.
-- **`h`**: tiebreaker — among nodes with equal f, prefer lower h (closer to goal).
-- **`insertion_order`**: second tiebreaker — FIFO order among equal f and h.
-
-When a better path to the same state is found, instead of removing the old entry from the heap (which is $O(n)$), the code **pushes a new entry** and updates `open_nodes[state]` to the new node. When the stale entry is later popped, the check `open_nodes.get(state) is not current` catches it and skips it. This is called **lazy deletion**.
-
-#### Re-opening Closed States
-
-With **consistent** heuristics (h1, h3), a state is never expanded more than once. But with **inconsistent** heuristics (h2), a state already in Closed may be reached via a cheaper path. The algorithm detects this (`child.f < closed_node.f`), removes the state from Closed, and adds it back to Open. This counter is tracked by `reopened`.
-
-#### Goal Test at Expansion (not Generation)
-
-Unlike BFS (which tests the goal when a child is generated), A\* tests the goal **when a node is dequeued** from Open. This is important because a child with `isGoal() == True` might not have the cheapest $f$ — a different path might reach the goal with lower cost.
-
-### 8.3 Why A\* Guarantees Optimality (with Admissible Heuristics)
-
-A heuristic $h(n)$ is **admissible** if $h(n) \leq h^*(n)$ for all states, where $h^*(n)$ is the true optimal remaining cost. If $h$ is admissible, then $f(n) = g(n) + h(n) \leq g(n) + h^*(n) = g^*(n)$. This means A\* never overestimates the total cost, so the first goal node dequeued must be optimal.
-
-A heuristic is **consistent** (monotone) if $h(n) \leq c(n, n') + h(n')$ for every edge. Consistency implies admissibility and also guarantees that once a state is expanded (moved to Closed), its $g$-value is already optimal — so no re-opening is ever needed.
-
----
-
-## 9. Step 7 — Heuristic Functions (`heuristics.py`)
-
-Three heuristic functions are provided, each making a different trade-off between accuracy and computational cost.
-
-### 9.1 Heuristic h1 — Misplaced Boxes Count
-
-```python
-def h1(state: SokobanPuzzle) -> int:
-    return sum(1 for box in state.boxes if box not in state.layout.targets)
-```
-
-**Idea**: Count how many boxes are **not** on a target. Each such box needs **at least one push**, and each push costs one move.
-
-**Example** — Level 1 initial state (1 box not on target):
-```
-OOOOOO
-OS B O      Box at (1,3), Target at (1,1)
-O OR O      → h1 = 1 (the box is not on the target)
-O    O
-```
-
-**Properties**:
-- **Admissible**: ✅ Every misplaced box needs ≥ 1 push → h1 ≤ true cost.
-- **Consistent**: ✅ A single move changes at most one box's placement, so $h_1(n) - h_1(n') \leq 1 = c(n, n')$.
-- **Fast**: $O(|boxes|)$ per call — just a set membership check per box.
-- **Weakness**: Very coarse. It says "3 boxes are off target" but doesn't know if they need 3 pushes or 30 pushes. This makes A\*(h1) expand almost as many nodes as BFS.
-
-### 9.2 Heuristic h2 — Assignment Formula (Non-Admissible)
-
-```python
-def h2(state: SokobanPuzzle) -> int:
-    unplaced = h1(state)
-    distance_sum = 0
-    for box in state.boxes:
-        if box in state.layout.targets:
+def successorFunction(self) -> list[tuple[str, "SokobanPuzzle"]]:
+    successors = []
+    for action, (dr, dc) in ACTIONS:
+        adjacent = (self.player[0] + dr, self.player[1] + dc)
+        if not self._is_walkable(adjacent):
             continue
-        distance_sum += min(
-            abs(box[0] - target[0]) + abs(box[1] - target[1])
-            for target in state.layout.targets
-        )
-    return 2 * unplaced + distance_sum
+        new_boxes = self.boxes
+        if adjacent in self.boxes:
+            beyond = (adjacent[0] + dr, adjacent[1] + dc)
+            if not self._is_walkable(beyond) or beyond in self.boxes:
+                continue
+            new_boxes = (self.boxes - {adjacent}) | {beyond}
+        successors.append((action, self._from_successor(self.layout, adjacent, new_boxes)))
+    return successors
 ```
 
-**Idea**: This is the formula from the assignment: $h_2 = 2 \times |\text{unplaced boxes}| + \sum_{\text{unplaced box}} \min_{\text{target}} \text{Manhattan}(box, target)$.
+A move that is not a push leaves `boxes` untouched (the same frozenset object is reused). This is also what the deadlock pruning relies on: if `successor.boxes - current.boxes` is empty, no box moved.
 
-The **Manhattan distance** between a box and a target is $|r_{box} - r_{target}| + |c_{box} - c_{target}|$ — the minimum number of grid steps ignoring walls.
-
-**Example** — Level 1 initial state:
-```
-Box at (1,3), Target at (1,1)
-unplaced = 1
-Manhattan((1,3), (1,1)) = |1-1| + |3-1| = 2
-h2 = 2×1 + 2 = 4
-```
-
-**Properties**:
-- **Admissible**: ❌ The **$2 \times$ unplaced** term can overestimate. Consider a single box 1 push from the target: the true cost might be 1, but h2 = 2×1 + 1 = 3.
-- **Consistent**: ❌ Since it's not admissible, it cannot be consistent.
-- **Effect**: Because h2 can overestimate, A\*(h2) may not find optimal solutions. However, it prunes more aggressively — it expands fewer nodes and runs faster than h1, often finding the same optimal path, but without any guarantee.
-- **Re-opening**: The A\* implementation handles h2's inconsistency by re-opening Closed states when a cheaper path is found.
-
-### 9.3 Heuristic h3 — Wall-Aware Push Assignment + Approach
-
-h3 is the most sophisticated heuristic. It consists of **three components**:
-
-#### Component 1: Dead-Square Detection
-
-```python
-for box in state.boxes:
-    if box not in layout.targets and box in layout.dead_squares:
-        return math.inf
-```
-
-A **dead square** is a floor cell from which no sequence of pushes can ever move a box to any target. These are precomputed once per level by running a **reverse BFS** from each target: starting from the target, simulate pulling a box backwards in every direction, and mark all reachable cells. Any floor cell NOT reached by this reverse process is a dead square.
-
-If any box sits on a dead square (and it's not already on a target), the state is **unsolvable** → return $\infty$. A\* will never expand this node.
-
-#### Component 2: Minimum-Cost Push Assignment (Bitmask DP)
-
-```python
-boxes = tuple(sorted(state.boxes))
-cost_rows = tuple(layout.push_distances[box] for box in boxes)
-push_lower_bound = _min_assignment(cost_rows)
-```
-
-This computes the **minimum total push cost** to assign each box to a distinct target, using wall-aware push distances instead of simple Manhattan distances.
-
-**Push distances** are precomputed per level: for each floor cell, a reverse BFS simulates pulling a box backwards (the pull-source cell must be walkable and not a wall). The resulting `push_distances[cell]` is a tuple of distances from that cell to each target. If a cell can't reach a target via pushes, the distance is $\infty$.
-
-The assignment problem (each box goes to a different target, minimizing total push cost) is solved by **bitmask dynamic programming**:
-
-```
-For n boxes and n targets:
-- prev = {0: 0.0}   (bitmask 0 = no targets assigned yet, cost = 0)
-- For each box i (0 to n-1):
-    - For each previously computed (mask, cost):
-        - For each target t not in mask:
-            - new_mask = mask | (1 << t)
-            - candidate = cost + push_distance(box_i, target_t)
-            - Keep the minimum for each new_mask
-- Result = min over all final masks with n bits set
-```
-
-This runs in $O(n^2 \cdot 2^n)$ time, which is fast for Sokoban's typical 2–5 boxes.
-
-**Example** — Level 3 (2 boxes, 2 targets):
-```
-Box₁ at (2,3), Box₂ at (4,6)
-Target₁ at (5,6), Target₂ at (6,6)
-
-push_distances[Box₁][Target₁] = 5   push_distances[Box₁][Target₂] = 6
-push_distances[Box₂][Target₁] = 1   push_distances[Box₂][Target₂] = 2
-
-Assignment 1: Box₁→T₁, Box₂→T₂ = 5 + 2 = 7
-Assignment 2: Box₁→T₂, Box₂→T₁ = 6 + 1 = 7
-→ push_lower_bound = 7
-```
-
-The result is **cached** at module level with `@lru_cache` — identical box configurations across different search nodes reuse the same result.
-
-#### Component 3: Player Approach Cost
-
-```python
-approach = max(0, min(
-    abs(state.player[0] - box[0]) + abs(state.player[1] - box[1])
-    for box in boxes
-) - 1)
-```
-
-The player must **walk** to an adjacent cell of a box before the first push. The minimum walk distance is the Manhattan distance to the nearest box minus 1 (because the player pushes from an adjacent cell, not from the box cell itself).
-
-This cost is **disjoint** from push costs — walking happens before the first push — so adding it to the push lower bound remains admissible.
-
-**Final formula**: $h_3(n) = \text{push\_lower\_bound} + \text{approach}$
-
-**Properties**:
-- **Admissible**: ✅ Push distances are exact (walls respected), and the optimal assignment lower-bounds the actual pushes. Approach is also a lower bound.
-- **Consistent**: ✅ Any single move changes the approach by at most 1 and doesn't reduce the optimal assignment by more than the 1-step cost.
-- **Strong pruning**: Dead-square detection ($\infty$) immediately eliminates provably unsolvable states.
-- **Cost**: More expensive per call ($O(n^2 \cdot 2^n)$), but the aggressive pruning means far fewer nodes are expanded, leading to much faster total search time.
+`isGoal()` is simply `boxes == layout.targets`.
 
 ---
 
-## 10. Step 8 — How A\* Behaves with Each Heuristic
+## 6. The Search Node (`node.py`)
 
-### 10.1 A\*(h1) — Guided by Misplaced Box Count
+A `Node` is one entry in the search tree:
 
-With $f(n) = g(n) + h_1(n)$, A\* prefers states where fewer boxes are off-target. But since h1 only tells "how many boxes are wrong", not "how far they are from the target", the guidance is weak. A\*(h1) explores almost the same number of nodes as BFS.
+| Field | Meaning |
+|---|---|
+| `state` | The `SokobanPuzzle` |
+| `parent` | Predecessor node (`None` for the root) |
+| `action` | The move that led from parent to this node |
+| `g` | Path cost so far = number of moves (`parent.g + 1`) |
+| `f` | `g + h(state)`, set by `setF(heuristic)` (A\* only) |
 
-**Behavior**: Acts like a slightly informed BFS. It always finds the **optimal** solution (h1 is admissible and consistent). No re-opening occurs.
-
-### 10.2 A\*(h2) — Aggressive but Non-Optimal
-
-With $f(n) = g(n) + h_2(n)$, A\* aggressively prunes states because h2 returns larger values. The $2 \times \text{unplaced}$ multiplier inflates the estimate, making non-goal states look more expensive.
-
-**Behavior**: Expands significantly fewer nodes than BFS or A\*(h1). However, because h2 is **not admissible**, A\*(h2) may:
-- Find a **suboptimal** solution (expanded a non-cheapest goal first).
-- **Re-open** states from Closed when a cheaper path is discovered later.
-
-On the bundled levels, A\*(h2) happens to find the same optimal cost on most levels, but this is **not guaranteed** — it's a coincidence of the level geometry.
-
-### 10.3 A\*(h3) — Best of Both Worlds
-
-With $f(n) = g(n) + h_3(n)$, A\* gets a tight, admissible estimate that accounts for wall geometry, dead squares, and the optimal box-to-target assignment.
-
-**Behavior**: Expands far fewer nodes than BFS/A\*(h1), while still guaranteeing **optimality** (h3 is admissible and consistent). Dead-square pruning means entire branches of the search tree are skipped instantly.
-
-### 10.4 Performance Comparison
-
-| Level | Algorithm | Solution Cost | Expanded | Generated | Max Frontier | Time |
-|-------|-----------|:------------:|:--------:|:---------:|:----------:|:----:|
-| 1     | BFS       | **4**  | 11       | 32       | 5      | ~0.2ms |
-| 1     | A\*(h1)   | **4**  | 11       | 32       | 5      | ~0.2ms |
-| 1     | A\*(h2)   | **4**  | 8        | 24       | 6      | ~0.2ms |
-| 1     | A\*(h3)   | **4**  | 5        | 15       | 6      | ~0.3ms |
-| 3     | BFS       | **20** | 1,854    | 5,163    | 244    | ~19ms |
-| 3     | A\*(h1)   | **20** | 1,701    | 4,750    | 218    | ~25ms |
-| 3     | A\*(h2)   | **20** | 650      | 1,835    | 159    | ~13ms |
-| 3     | A\*(h3)   | **20** | 327      | 925      | 123    | ~27ms |
-| 5     | BFS       | **30** | 315,127  | 1,029,632| 41,050 | ~3.2s |
-| 5     | A\*(h1)   | **30** | 213,074  | 699,183  | 40,459 | ~3.3s |
-| 5     | A\*(h2)   | **30** | 24,394   | 81,189   | 9,947  | ~0.5s |
-| 5     | A\*(h3)   | **30** | 9,537    | 32,865   | 6,499  | ~0.5s |
-
-**Key observations**:
-- **h1** provides minimal improvement over BFS because it barely distinguishes states.
-- **h2** dramatically reduces expansions (~13× fewer on Level 5) by being more aggressive, at the risk of non-optimality.
-- **h3** achieves the **best reduction** (~33× fewer on Level 5) while preserving optimality. The wall-aware push distances and dead-square pruning make a decisive difference.
-- On small levels (1–2), all algorithms perform similarly because the search space is tiny.
-- A\*(h3) per-node cost is higher (bitmask DP), but the drastic reduction in expanded nodes more than compensates.
-
-### 10.5 Visualization of Search Reduction
-
-```
-Level 5 — Expanded nodes comparison:
-
-  BFS       ████████████████████████████████████████████████████  315,127
-  A*(h1)    ██████████████████████████████████████                213,074
-  A*(h2)    ████                                                   24,394
-  A*(h3)    ██                                                      9,537
-            └──────────────────────────────────────────────────┘
-```
+`getSolution()` walks parent links to build the action list; `getPath()` builds the list of states (used by the GUI for playback). `expand()` wraps each successor in a child `Node`.
 
 ---
 
-## 11. Step 9 — The GUI (`gui.py`)
+## 7. BFS (`search.py`)
 
-The GUI is built with **Pygame** and provides an interactive way to load levels, solve them, and watch the solution play back.
+BFS uses a FIFO `deque`. Because every move costs 1, the first goal it reaches is a **shortest** solution.
 
-### 8.1 Architecture
+Data structures:
 
-```
-┌─────────────────────────────────────────────┐
-│                SokobanGUI                    │
-│                                              │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
-│  │ Level    │  │ Solver   │  │ Playback  │  │
-│  │ Manager  │  │ Thread   │  │ Engine    │  │
-│  └──────────┘  └──────────┘  └───────────┘  │
-│        │              │             │        │
-│        ▼              ▼             ▼        │
-│  ┌─────────────────────────────────────────┐ │
-│  │           Pygame Render Loop            │ │
-│  │   - Controls bar (level/playback btns)  │ │
-│  │   - Board drawing (tiles, player, box)  │ │
-│  │   - Info panel (stats, step counter)    │ │
-│  └─────────────────────────────────────────┘ │
-└─────────────────────────────────────────────┘
+- `frontier` (deque) and `frontier_states` (set) — the queue and a fast membership test.
+- `explored` (set) — states already expanded.
+
+Per expansion, for each child:
+
+```text
+1. if child.state in explored or in frontier_states   → skip (duplicate)
+2. if deadlock pruning is on and the pushed box is on a dead cell
+                                                       → pruned += 1, skip
+3. if child.state is goal                              → return (goal test at generation)
+4. append to frontier
 ```
 
-### 8.2 Key Components
+Other details:
 
-#### Level Management
-- All 5 levels are pre-loaded at startup into `self.levels`.
-- `_change_level(index)` switches levels and resets all playback state.
-
-#### Background Solving
-- When the user clicks "Solve" or presses `S`, `_start_solve()` launches BFS in a **worker thread** (`threading.Thread`).
-- The solver puts its result in a `queue.Queue`.
-- The main loop checks `self.result_queue` every frame — when a result arrives, it updates the display and unlocks playback controls.
-- **Why a thread?** BFS can take hundreds of milliseconds. Running it on the main thread would freeze the window.
-
-#### Playback Engine
-- After solving, `result.path` contains every state from start to goal.
-- `self.step` is an index into this path.
-- **Play/Pause** (`Space`): auto-advances `self.step` at `self.delay_ms` intervals.
-- **Step Forward** (`→` or `N`): advance one step.
-- **Step Back** (`←` or `B`): go back one step.
-- **Reset** (`R`): go back to step 0.
-- **Speed** (`+`/`-`): adjust `delay_ms` (60ms to 1500ms range).
-
-### 8.3 Board Rendering (`_draw_board`)
-
-The board is drawn using Pygame primitives (no sprite images):
-
-| Element | Visual |
-|---------|--------|
-| Wall (`O`) | Gray rectangles with brick-line pattern |
-| Floor (` `) | Light tan rectangles |
-| Target (`S`) | Tan floor + small brown circle |
-| Box (`B`) | Brown rounded rectangle with diagonal cross |
-| Box on target (`*`) | Golden/yellow rounded rectangle (signals correct placement) |
-| Player (`R`) | Blue body circle + skin-colored head circle |
-
-The board automatically **scales** to fit the window, computing a tile size from the available space.
-
-### 8.4 Info Panel (`_draw_info`)
-
-Displays on the right side:
-- Algorithm name, level name, status message.
-- Solution cost, action count, expanded/generated nodes, max frontier, search time.
-- Current step index and action at that step.
-- If multiple solvers are registered, a comparison table.
-
-### 8.5 Controls
-
-| Control | Mouse | Keyboard |
-|---------|-------|----------|
-| Choose level | Click level button | `1`–`5` |
-| Solve | Click "Solve" | `S` |
-| Play/Pause | Click "Play" | `Space` |
-| Step forward | Click "Step" | `→` or `N` |
-| Step back | Click "Back" | `←` or `B` |
-| Reset | Click "Reset" | `R` |
-| Speed up | — | `+` |
-| Slow down | — | `-` |
+- The goal test happens **when a child is generated** (a standard BFS optimization that is still optimal for unit costs).
+- With `use_deadlock=True`, a root that already contains a deadlocked box returns "no solution" immediately.
+- `max_expanded` is an optional cap used by the benchmark; hitting it marks the result `incomplete=True`.
 
 ---
 
-## 12. Step 10 — Tests
+## 8. A\* (`search.py`)
 
-The test suite validates correctness using `unittest`. It covers:
+### 8.1 Evaluation and queue
 
-| Test | What It Verifies |
-|------|------------------|
-| `test_round_trip_goal_and_state_hash` | A state can be serialized to text and parsed back to an equal state; goal detection works; hash consistency. |
-| `test_moves_pushes_and_blocking` | A push moves the box correctly; blocked directions are excluded from successors; two adjacent boxes block a push. |
-| `test_plain_move_no_pull_and_push_blocked_by_wall` | Moving into empty space works; walls block movement; pushing a box into a wall is disallowed. |
-| `test_player_and_box_on_target_transitions` | Composite symbols (`.` and `*`) appear correctly and transitions preserve them. |
-| `test_node_path_solution_and_minimal_bfs` | Node path/solution tracing works; BFS on a trivial 1-move puzzle returns cost 1. |
-| `test_validation` | A level with no player raises `ValueError`. |
-| `test_bundled_levels_solve_and_replay` | All 5 bundled levels are solvable; solution cost matches action count; replaying the actions reaches the goal. |
+A\* orders nodes by `f(n) = g(n) + h(n)`. The heap holds tuples `(f, h, insertion_counter, node)`:
 
-Run with:
+1. lowest `f` first,
+2. then lowest `h` (prefer nodes that look closer to the goal),
+3. then insertion order (FIFO) so heap comparison never has to compare `Node` objects.
+
+### 8.2 Open and Closed sets
+
+- `open_nodes: dict[state → Node]` — the best known node for each state on the frontier.
+- `closed_nodes: dict[state → Node]` — expanded states.
+- **Lazy replacement:** when a cheaper path to a state in Open is found, the new node is pushed and `open_nodes` is updated. The old heap entry stays in the heap and is skipped when popped because `open_nodes.get(state) is not current`.
+- **Re-opening:** if a cheaper path reaches a state already in Closed (possible with an inconsistent heuristic such as `h2`), it is removed from Closed and put back in Open, and `reopened` is incremented.
+
+### 8.3 Goal test
+
+Unlike BFS, A\* tests for the goal **when a node is popped**, not when it is generated. This is what guarantees optimality with an admissible heuristic.
+
+### 8.4 Order of checks for each child
+
+```text
+1. build child, compute child.f = g + h(state)
+2. if child.f is infinity                  → skip   (only h3_exact can return ∞)
+3. if deadlock pruning is on and the
+   pushed box is on a dead cell            → pruned += 1, skip
+4. Open / Closed duplicate handling (replace, re-open, or skip if not better)
+5. push on the heap
+```
+
+Note that the heuristic is evaluated *before* the deadlock check, so pruned children still cost one heuristic evaluation. They also count toward `generated`.
+
+### 8.5 The `SOLVERS` registry
+
+`SOLVERS` maps a display name to a ready-to-call function. It is built with `functools.partial` and is wrapped in a read-only `MappingProxyType`:
+
+| Registry key | Algorithm | Heuristic | Deadlock pruning |
+|---|---|---|:---:|
+| `BFS` | BFS | — | no |
+| `BFS + deadlock` | BFS | — | yes |
+| `A* (h1)` | A\* | `h1` | no |
+| `A* (h1) + deadlock` | A\* | `h1` | yes |
+| `A* (h2)` | A\* | `h2` | no |
+| `A* (h2) + deadlock` | A\* | `h2` | yes |
+| `A* (h3)` | A\* | `h3` | no |
+| `A* (h3) + deadlock` | A\* | `h3` | yes |
+| `A* (h3) + exact dead squares` | A\* | `h3_exact` | via `h = ∞` instead of the pruning flag |
+
+Every solver returns a `SearchResult` with: `solution`, `actions`, `path`, `cost`, `expanded`, `generated`, `max_frontier`, `elapsed_seconds`, `incomplete`, `reopened`, `algorithm`, `pruned`, and a `found` property.
+
+---
+
+## 9. Heuristics (`heuristics.py`)
+
+| Heuristic | Formula | Admissible | Consistent |
+|:---:|---|:---:|:---:|
+| `h1` | Number of boxes not on a target | Yes | Yes |
+| `h2` | `2 × unplaced + Σ (Manhattan distance of each unplaced box to its nearest target)` | **No** | **No** |
+| `h3` | Minimum-cost box→target assignment using wall-aware push distances, plus a player-approach term | Yes | Yes |
+| `h3_exact` | Like `h3`, but returns `∞` for provably dead states | Yes (∞ only where no solution exists) | — |
+
+### 9.1 `h1`
+
+Each unplaced box needs at least one push and every push costs one move. Fast (`O(B)`) but weak: A\* with `h1` expands almost as much as BFS.
+
+### 9.2 `h2`
+
+Implemented exactly as the assignment's formula. The doubled "misplaced" term can overestimate (a box one cell from its target costs 1 push but contributes 2 + 1 = 3), so A\* with `h2` expands fewer nodes but **may return non-optimal solutions**. This is why A\* supports re-opening.
+
+### 9.3 `h3`
+
+1. Build a cost matrix: row = box, column = target, value = **push distance** from the box's cell to that target (precomputed at parse time, see Section 10).
+2. If a push distance is `∞` (the box is on a dead square for that target), replace it with the **Manhattan distance** to that target. Manhattan ignores walls, so it is still a lower bound, and the heuristic stays finite.
+3. Solve the minimum-cost one-to-one assignment with a **bitmask dynamic program** (`_min_assignment`, cached with `lru_cache`).
+4. Add an **approach term**: `max(0, distance from player to nearest box − 1)`. The player must walk next to some box before the first push. The nearest box is chosen among *all* boxes (including ones already on targets), because an already-placed box might be the first one pushed — restricting to unplaced boxes would break admissibility.
+
+The walking steps and the push steps are disjoint moves, so adding them is still a lower bound.
+
+### 9.4 Why `h3` is deliberately *not* deadlock-aware
+
+An earlier version returned `∞` when a box sat on an unreachable (dead) square. That silently pruned deadlocks inside plain `A* (h3)` and hid the real benefit of Part 3's explicit deadlock detection. The "Phase 0 cleanup" made `h3` **deadlock-agnostic** (finite Manhattan fallback), so that:
+
+- `A* (h3)` vs `A* (h3) + deadlock` is a fair comparison of the *pruning* effect, and
+- the original infinity-returning behavior is preserved as `h3_exact`, registered as `A* (h3) + exact dead squares`.
+
+### 9.5 `h3_exact`
+
+Same as `h3` but:
+
+1. If any box is on a **dead square** and not on a target → return `∞` immediately.
+2. Uses the raw push-distance rows (no Manhattan fallback). If the best assignment is infinite → return `∞`.
+
+A\* skips children whose `f` is infinite, and also rejects the root if `root.f` is infinite. Because this pruning happens inside the heuristic, the `pruned` counter stays 0 for this solver.
+
+`h3_exact` is **not** in the `HEURISTICS` dictionary (which only contains `h1`, `h2`, `h3`); it is reachable only through its `SOLVERS` entry.
+
+---
+
+## 10. Push Distances and Dead Squares (computed at parse time)
+
+This precomputation is shared by `h3`, `h3_exact`, and the "exact dead squares" solver. It is computed in `_compute_push_distances` and stored in the layout.
+
+### 10.1 Reverse push BFS
+
+For each target, run a BFS **backwards** from the target. A box that is at cell `current` could have come from `previous = current − d` (where `d` is a direction) if:
+
+- `previous` is floor, **and**
+- `support = current − 2d` is floor (that is where the player must have stood to push the box from `previous` to `current`).
+
+Each reverse step adds 1. The result for cell `c` and target `t` is the minimum number of pushes needed to bring a box from `c` to `t`, ignoring other boxes and ignoring whether the player can actually walk there. Unreachable cells get `∞`.
+
+`layout.push_distances[cell]` is a tuple with one distance per target (targets sorted).
+
+### 10.2 Dead squares
+
+```python
+dead_squares = {cell for cell, distances in push_distances.items()
+                if not any(math.isfinite(d) for d in distances)}
+```
+
+A cell is a **dead square** if a box on it can never reach *any* target. This is the "exact" static dead set: it is the true set of cells that are useless for a box, considering walls only.
+
+Dead squares are stored in `layout.dead_squares`. They are used by `h3_exact` and in tests as the ground truth against which the simpler corner/line detection is compared.
+
+---
+
+## 11. Deadlock Detection (`deadlock.py`)
+
+### 11.1 What a deadlock is, and why detect it
+
+A **deadlock** is a state from which no sequence of moves can reach the goal. Without detection the search keeps expanding such states, because `h1`, `h2`, and `h3` all return finite numbers for them. Every state below a deadlocked state is wasted work.
+
+The module detects **static deadlocks**: dead cells that depend only on walls and targets, so they can be computed **once per board** and reused for every state.
+
+The module exports:
+
+```python
+__all__ = ["corner_deadlocks", "line_deadlocks", "deadlock_positions",
+           "hasDeadlock", "deadlockBoxes", "has_deadlock_incremental"]
+```
+
+### 11.2 Corner deadlocks (Figure 5) — `corner_deadlocks(layout)`
+
+A cell is a corner deadlock when **all** of these hold:
+
+1. It is a playable floor cell (`in layout.walkable`).
+2. It is **not** a target.
+3. It has a wall on a vertical side (**up or down**) **and** a wall on a horizontal side (**left or right**).
+
+```python
+has_vertical_wall   = (r-1, c) in walls or (r+1, c) in walls
+has_horizontal_wall = (r, c-1) in walls or (r, c+1) in walls
+if has_vertical_wall and has_horizontal_wall:  # and not a target
+    deadlocks.add((r, c))
+```
+
+**Why it is dead:** to push a box you must stand on the opposite side. A box in a corner has a wall on one vertical and one horizontal side, so it can move along neither axis. It stays there forever.
+
+Targets are excluded because a box in a corner target is simply solved.
+
+### 11.3 Line deadlocks (Figure 6) — `line_deadlocks(layout)`
+
+A **line deadlock** is a straight run of cells along a wall that a box can never leave, even though it is not itself in a corner.
+
+The algorithm takes the corner set and looks for *pairs of corners that share a row or a column*:
+
+1. Group corner cells by row (for horizontal segments) and by column (for vertical segments).
+2. For every pair `(c1, c2)` in the same row, form the segment of cells between them, inclusive.
+3. Accept the segment only if:
+   - **every cell is floor and none is a target**, and
+   - **one whole side is wall**: either every cell directly above is a wall, or every cell directly below is a wall (for vertical segments: every cell to the left, or every cell to the right).
+4. Add the segment's cells to the result.
+5. Repeat for columns.
+6. Finally **remove the corner cells** from the result (`deadlocks - corners`), so `line_deadlocks` returns only the *interior* cells (drawn yellow in the GUI; corners are red).
+
+**Why it is dead:** a box on such a segment touches a solid wall on one side, so it can only be pushed *along* the wall (you cannot stand inside the wall to push it away from it). Sliding along the segment only ever leads to one of the two corner endpoints, and there is no target on the way. So the box can never reach a target.
+
+**Why targets break the rule:** if even one cell of the segment is a target, a box could slide along the wall into it, so the segment is not dead and is rejected.
+
+### 11.4 The combined set — `deadlock_positions(layout)`
+
+```python
+dead = (corner_deadlocks(layout) | line_deadlocks(layout)) - layout.targets
+```
+
+- Union of corners and lines (corners are re-added here, since `line_deadlocks` removed them).
+- The final `- layout.targets` is a safety net: targets can never be deadlock cells.
+- **Cached** in a module-level dictionary `_deadlock_cache: dict[BoardLayout, frozenset[Position]]`. Since every state of a level shares the same `BoardLayout` object (and equal layouts hash equally), the detection runs once per level, no matter how many millions of states are examined.
+
+The cache is a global dictionary used purely for memoization. It never changes what the function returns for a given layout, so it does not affect correctness.
+
+### 11.5 State-level helpers
+
+| Function | Returns | Use |
+|---|---|---|
+| `hasDeadlock(state)` | `bool` — is any box on a dead cell? | Root check at the start of BFS/A\* (`state.boxes & dead`) |
+| `deadlockBoxes(state)` | `frozenset` of the offending boxes | Diagnostics / tests |
+| `has_deadlock_incremental(state, pushed_box)` | `bool` — is the *just-pushed* box on a dead cell? `False` if `pushed_box is None` | Fast per-move check |
+
+The incremental version exists because a single move changes at most one box. Re-checking all boxes after each move would repeat work already done for the parent state (which was not deadlocked, otherwise it would have been pruned).
+
+### 11.6 Worked example
+
+Take this 7×5 room:
+
+```text
+OOOOOOO
+O     O
+O BS  O      B = box at (2,2),  S = target at (2,3)
+O   R O      R = player at (3,4)
+OOOOOOO
+```
+
+**Corners** (floor, not a target, wall on a vertical side *and* a horizontal side): `(1,1)`, `(1,5)`, `(3,1)`, `(3,5)`.
+
+**Lines:**
+
+- Row 1: corners `(1,1)` and `(1,5)` share the row; cells `(1,1)…(1,5)` are floor, none is a target, and every cell above is wall → `(1,2)`, `(1,3)`, `(1,4)` are line deadlocks.
+- Row 3: same reasoning with the wall below → `(3,2)`, `(3,3)`, `(3,4)`.
+- Column 1: `(1,1)` and `(3,1)` share the column, left side is all wall → `(2,1)`.
+- Column 5: → `(2,5)`.
+
+Deadlock map (`C` = corner/red, `L` = line/yellow, blank = safe):
+
+```text
+OOOOOOO
+OCLLLCO
+OL   LO
+OCLLLCO
+OOOOOOO
+```
+
+Only the three middle cells `(2,2)`, `(2,3)`, `(2,4)` are safe for a box. That matches intuition: any box pushed against a wall with no target along that wall is lost.
+
+**What pruning does here.** The shortest solution is `LEFT, LEFT, LEFT, UP, RIGHT` (5 moves): walk to `(2,1)` and push the box right onto `S`. Every solver finds exactly this solution. While searching, only three distinct pushes land a box on a dead cell:
+
+- player at `(3,2)` pushes **UP** → box goes to `(1,2)`, a line deadlock → **pruned**;
+- player at `(1,2)` pushes **DOWN** → box goes to `(3,2)`, a line deadlock → **pruned**;
+- player at `(2,3)` pushes **LEFT** → box goes to `(2,1)`, a line deadlock → **pruned**.
+
+The push that solves the puzzle (player at `(2,1)` pushing **RIGHT**, box to `(2,3)`) lands on the target, which is never dead, so it is kept. Every state beneath a pruned child is never generated.
+
+Measured on this room (run against the code; the counters are deterministic):
+
+| Solver | Cost | Expanded | Generated | Pruned |
+|---|---:|---:|---:|---:|
+| BFS | 5 | 21 | 65 | 0 |
+| BFS + deadlock | 5 | 13 | 39 | 3 |
+| A\* (h3) | 5 | 11 | 35 | 0 |
+| A\* (h3) + deadlock | 5 | 9 | 29 | 3 |
+
+Same cost in every row (optimality preserved), with fewer expansions and generations once the three doomed pushes are cut. In this particular room the corner and line cells (12 cells) happen to equal the exact `dead_squares` set, so the simple patterns lose nothing here. On boards with dead cells that are neither corners nor wall lines, the exact set is larger.
+
+### 11.7 Soundness: why pruning keeps solutions
+
+A pruned state is one where a box stands on a cell proven dead. By the arguments in 11.2 and 11.3 no solution passes through such a state (`h* = ∞`). Hence:
+
+- BFS + deadlock still returns an optimal solution.
+- A\* with an admissible heuristic + deadlock still returns an optimal solution.
+
+The benchmark confirms this: every `+ deadlock` row has the same cost as its non-deadlock counterpart (Section 13). The test suite also checks that on the bundled levels **every** corner/line deadlock lies inside the exact `dead_squares` set (100 % precision — no false alarms).
+
+### 11.8 Cost of detection
+
+| Step | Cost |
+|---|---|
+| Corner detection | `O(W × H)` once per layout |
+| Line detection | Per row/column, pairs of corners × segment length — small for real boards; once per layout |
+| Per-child lookup | `O(1)` set membership |
+| Finding the pushed box in search | `successor.boxes − current.boxes`, which is `O(B)` (B = number of boxes, small) |
+| `has_deadlock_incremental` | `O(1)` given the pushed position |
+
+### 11.9 What it does **not** detect (limitations)
+
+The detection is static and local. These deadlock families are *not* covered:
+
+- **Freeze / 2×2 deadlocks** — boxes or walls forming a 2×2 block that cannot be separated.
+- **Dynamic deadlocks** — a box that is frozen only because of where *other boxes* currently stand.
+- **Corral deadlocks** — regions the player can no longer reach.
+- **Dead squares that are not corners or wall lines** — cells that are useless for geometric reasons but do not match the two patterns. The exact `dead_squares` set (Section 10.2) is stronger than corners + lines and can catch more.
+
+Because of that, pruning is *conservative*: it removes only states that are certainly lost, never a state that might still be solvable.
+
+### 11.10 `deadlock.py` vs. exact dead squares
+
+| | Corner + line (`deadlock.py`) | Exact dead squares (`sokoban_puzzle.py` + `h3_exact`) |
+|---|---|---|
+| Idea | Two geometric patterns from the assignment | Reverse-push reachability from every target |
+| Power | Subset of the dead set | Full static dead set |
+| Where applied | Search loop (`use_deadlock=True`) | Inside `h3_exact` (returns `∞`) |
+| Visible in `pruned` counter | Yes | No (`pruned = 0`) |
+| Role in the project | The Part 3 deliverable | Ground truth / extra comparison solver |
+
+---
+
+## 12. How Deadlock Pruning Plugs Into the Searches
+
+Both searches use the same idea: **after generating a child, if the move pushed a box onto a dead cell, drop the child.**
+
+```python
+dead = deadlock_positions(initial_state.layout) if use_deadlock else frozenset()
+...
+if dead:
+    new_boxes = child.state.boxes - node.state.boxes     # empty if the move was not a push
+    if new_boxes and next(iter(new_boxes)) in dead:
+        pruned += 1
+        continue
+```
+
+- When `use_deadlock=False`, `dead` is an empty frozenset, so `if dead:` is false and the check costs nothing.
+- `new_boxes` has exactly one element after a push (the new box location) and is empty after a plain walk.
+- This is the same logic as `has_deadlock_incremental`, written inline.
+
+### 12.1 Root check
+
+Before the loop, `hasDeadlock(initial_state)` is called when pruning is on. If the starting position already has a box on a dead cell, the search returns "no solution" without expanding anything.
+
+### 12.2 Where the check sits in each algorithm
+
+| | Order inside the child loop |
+|---|---|
+| **BFS** | duplicate check → **deadlock check** → goal test → enqueue |
+| **A\*** | compute `f` → skip if `f = ∞` → **deadlock check** → Open/Closed handling → push |
+
+Consequences:
+
+- In BFS, duplicates are discarded before the deadlock check, so they are not counted as `pruned`.
+- A goal state has every box on a target, and targets are never dead cells, so the deadlock check can never reject the goal.
+- In A\*, a pruned child has already had its heuristic computed. Pruning saves **expansions and memory**, not that one evaluation.
+
+### 12.3 Counter definitions
+
+| Counter | Meaning |
+|---|---|
+| `expanded` | States removed from the frontier and expanded |
+| `generated` | Root (1) + all successors produced, **including** duplicates and pruned children |
+| `pruned` | Children discarded by the deadlock check |
+| `max_frontier` | Largest size of the frontier (BFS deque, or A\* open set) |
+| `reopened` | Closed states re-opened by A\* after finding a cheaper path |
+
+### 12.4 Why pruning helps `A* (h3)` even though `h3` is informed
+
+`h3` is deadlock-agnostic: for a box on a dead square it falls back to Manhattan distance and returns a finite value. A\* can therefore still wander through doomed regions whenever their `f` looks competitive. Pruning removes those regions before they enter Open.
+
+---
+
+## 13. Performance Comparison
+
+### 13.1 Benchmark results (levels 1–7)
+
+Numbers are from `results_part3.md` (median of 3 repetitions). Times will vary by machine; the counters are deterministic.
+
+| Level | Algorithm | Cost | Expanded | Generated | Max Frontier | Pruned | Time (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Example 1 | BFS | 4 | 11 | 32 | 5 | 0 | 0.000073 |
+| Example 1 | BFS + deadlock | 4 | 11 | 32 | 5 | 0 | 0.000076 |
+| Example 1 | A* (h3) | 4 | 5 | 15 | 6 | 0 | 0.000076 |
+| Example 1 | A* (h3) + deadlock | 4 | 5 | 15 | 6 | 0 | 0.000081 |
+| Example 2 | BFS | 29 | 1,079 | 3,246 | 89 | 0 | 0.006782 |
+| Example 2 | BFS + deadlock | 29 | 459 | 1,377 | 35 | 13 | 0.002955 |
+| Example 2 | A* (h3) | 29 | 353 | 1,115 | 121 | 0 | 0.005342 |
+| Example 2 | A* (h3) + deadlock | 29 | 135 | 431 | 65 | 12 | 0.002075 |
+| Example 3 | BFS | 20 | 1,854 | 5,163 | 244 | 0 | 0.011429 |
+| Example 3 | BFS + deadlock | 20 | 915 | 2,548 | 109 | 38 | 0.005835 |
+| Example 3 | A* (h3) | 20 | 445 | 1,247 | 188 | 0 | 0.007471 |
+| Example 3 | A* (h3) + deadlock | 20 | 327 | 925 | 123 | 17 | 0.005502 |
+| Example 4 | BFS | 19 | 3,446 | 9,969 | 955 | 0 | 0.023354 |
+| Example 4 | BFS + deadlock | 19 | 1,685 | 4,905 | 390 | 105 | 0.011549 |
+| Example 4 | A* (h3) | 19 | 561 | 1,646 | 309 | 0 | 0.011360 |
+| Example 4 | A* (h3) + deadlock | 19 | 439 | 1,310 | 207 | 26 | 0.008996 |
+| Example 5 | BFS | 30 | 315,127 | 1,029,632 | 41,050 | 0 | 2.974520 |
+| Example 5 | BFS + deadlock | 30 | 122,800 | 401,559 | 14,810 | 4,467 | 1.103959 |
+| Example 5 | A* (h3) | 30 | 18,247 | 61,699 | 13,163 | 0 | 0.498116 |
+| Example 5 | A* (h3) + deadlock | 30 | 9,537 | 32,865 | 6,499 | 720 | 0.245331 |
+| Fig 7 Ex 1 | BFS | 41 | 2,307 | 5,650 | 129 | 0 | 0.013424 |
+| Fig 7 Ex 1 | BFS + deadlock | 41 | 1,128 | 2,780 | 69 | 54 | 0.006826 |
+| Fig 7 Ex 1 | A* (h3) | 41 | 2,182 | 5,321 | 204 | 0 | 0.040616 |
+| Fig 7 Ex 1 | A* (h3) + deadlock | 41 | 1,000 | 2,459 | 120 | 54 | 0.018281 |
+| Fig 7 Ex 2 | BFS | 55 | 54,726 | 146,035 | 2,798 | 0 | 0.416970 |
+| Fig 7 Ex 2 | BFS + deadlock | 55 | 6,432 | 16,983 | 302 | 829 | 0.044313 |
+| Fig 7 Ex 2 | A* (h3) | 55 | 49,972 | 133,404 | 3,704 | 0 | 1.400845 |
+| Fig 7 Ex 2 | A* (h3) + deadlock | 55 | 5,718 | 15,186 | 444 | 790 | 0.135853 |
+
+**Reading the table:** for each level, the cost is identical across all four solvers. That is the optimality check — pruning never changed the answer, it only reduced the work.
+
+### 13.2 Reduction in expanded states from deadlock pruning
+
+| Level | BFS → BFS + deadlock | A\* (h3) → A\* (h3) + deadlock |
+|---|---|---|
+| Example 1 | 11 → 11 (0 %) | 5 → 5 (0 %) |
+| Example 2 | 1,079 → 459 (57.5 %) | 353 → 135 (61.8 %) |
+| Example 3 | 1,854 → 915 (50.6 %) | 445 → 327 (26.5 %) |
+| Example 4 | 3,446 → 1,685 (51.1 %) | 561 → 439 (21.7 %) |
+| Example 5 | 315,127 → 122,800 (61.0 %) | 18,247 → 9,537 (47.7 %) |
+| Fig 7 Ex 1 | 2,307 → 1,128 (51.1 %) | 2,182 → 1,000 (54.2 %) |
+| Fig 7 Ex 2 | 54,726 → 6,432 (88.2 %) | 49,972 → 5,718 (88.6 %) |
+
+### 13.3 Key insights
+
+1. **Pruning pays off most where deadlocks are plentiful.** On Fig 7 Ex 2, A\* (h3) drops from 49,972 to 5,718 expansions (−88.6 %); on Example 5, from 18,247 to 9,537 (−47.7 %).
+2. **No effect on a trivial level.** Example 1 has no reachable deadlock pushes (`pruned = 0`), so the counters are identical and the time is within noise.
+3. **`BFS + deadlock` can beat `A* (h3) + deadlock` in wall-clock time on Fig 7.** Fig 7 Ex 1: 0.0068 s vs 0.0183 s; Ex 2: 0.0443 s vs 0.1359 s. Once pruning removes most of the tree, BFS's cheap queue operations outpace the per-node cost of `h3` (cost-matrix build plus the assignment DP).
+4. **`h3` gives a decisive edge over weaker heuristics on Examples 2–5**, but on the two Fig 7 levels its advantage over `h2` is small (see `results_part3.md` for the `h1`/`h2` rows).
+5. **Pruned vs. frontier:** deadlock pruning also shrinks `max_frontier` (e.g. Fig 7 Ex 2 BFS: 2,798 → 302), which means lower memory use, not just fewer expansions.
+6. **`A* (h3) + exact dead squares`** reports `Pruned = 0` because it rejects states through `f = ∞` rather than through the pruning branch.
+
+---
+
+## 14. The GUI (`gui.py`)
+
+A Pygame window (1200×780, resizable) for running solvers and replaying solutions.
+
+### 14.1 Controls
+
+| Control | Keyboard | What it does |
+|---|:---:|---|
+| Level buttons | `1`–`7` | Switch level (resets playback) |
+| Algorithm | `A` | Toggle BFS ↔ A\* |
+| Heuristic | `H` | Cycle `h1 → h2 → h3` (buttons only appear when A\* is selected) |
+| **Deadlock pruning** | `D` | Toggle `use_deadlock` for the next solve |
+| **Deadlock overlay** | `X` | Show/hide the corner and line deadlock tint |
+| Solve | `S` | Run the selected solver in a background thread |
+| Compare | `C` | Run **all** registered solvers on the current level |
+| Play / pause | `Space` | Animate the solution |
+| Step forward / back | `→`, `N` / `←`, `B` | Move one state at a time |
+| Reset | `R` | Back to step 0 |
+| Speed | `+` / `−` | Change animation delay (60–1500 ms) |
+
+### 14.2 Deadlock overlay (`X`)
+
+When the overlay is on, `_draw_board` calls `corner_deadlocks(layout)` and `line_deadlocks(layout)` and tints the cells:
+
+| Colour | Meaning |
+|---|---|
+| **Red** (semi-transparent, red border) | Corner deadlock |
+| **Yellow** (semi-transparent, yellow border) | Line deadlock (interior cells only) |
+
+The tint is drawn **only on empty floor cells** — never over a box, a target, or the player — so the overlay cannot hide anything important. Because targets are excluded from deadlocks by definition, a target is never tinted anyway. The overlay is purely visual: turning it on or off does not change what the solver does. Only the `D` toggle changes the search.
+
+Note that the overlay calls `corner_deadlocks` / `line_deadlocks` directly, which are not cached (only `deadlock_positions` is), so they are recomputed every frame while the overlay is shown. This is cheap on these small boards.
+
+### 14.3 Solving in the background
+
+- `S` starts a **daemon thread** so the window stays responsive.
+- Results come back through a `queue.Queue`; the main loop drains it every frame.
+- Each request gets a **generation number**. If a stale result arrives (the same configuration was re-requested), it is ignored.
+- `C` runs all solvers sequentially in a single batch thread and posts each result as it finishes, so the comparison table fills in row by row.
+
+### 14.4 Result cache
+
+Results are stored under the key `(level_index, algorithm, heuristic, use_deadlock)`. Toggling deadlock pruning therefore switches between two separate cached results and never mixes them up.
+
+The `A* (h3) + exact dead squares` solver is stored under heuristic name `h3_exact`. It has no button of its own; it appears in the comparison table after you press `C`.
+
+**Known quirk in the current code.** Results are written under the key produced by `_key_to_components`, which always labels BFS as heuristic `h1`. The key used to *look results up* (`_current_cache_key`) uses whatever heuristic is currently selected. If you pick A\* with `h2` or `h3`, switch back to BFS, and press `S`, the BFS result is stored under `(level, "BFS", "h1", ...)` but the panel looks under `(level, "BFS", "h3", ...)`, so it shows nothing. Selecting `h1` first, or using `C` (compare) and reading the table, avoids it. A one-line fix is to make `_current_cache_key` return `"h1"` as the heuristic whenever the selected algorithm is BFS.
+
+### 14.5 Info panel
+
+- A status pill: `READY TO SOLVE`, `SEARCHING`, `SOLUTION FOUND`, `NO SOLUTION`, or `SOLVER ERROR`.
+- Cost in moves, the current action, a progress bar and step counter.
+- Metric cards: iterations (expanded), generated, **pruned (deadlock)**, max frontier, search time.
+- **Algorithm comparison table** with columns `ALG, COST, ITER, GEN, PRUN, OPEN, TIME`. A `*` marks the lowest cost among the solvers run, and `!` marks a cost above that minimum (a suboptimal result such as one from `h2`). `LIMIT` is shown for a search stopped by an expansion cap.
+
+### 14.6 Sprites
+
+If `assets/tileset.png` exists it is sliced into a 13×8 grid of sprites (floor, wall, target, box, box-on-target, four player directions). If it is missing, the GUI draws simple shapes instead. The player sprite faces the direction of the last move.
+
+---
+
+## 15. Test Suite
+
+56 unit tests across 5 modules:
+
+| Module | Covers |
+|---|---|
+| `test_sokoban.py` | Parsing, enclosure validation, move/push rules, state immutability |
+| `test_astar.py` | Optimality of `h1`/`h3`, re-opening with `h2`, `Node.setF`, path replay |
+| `test_heuristics.py` | Admissibility and consistency on exhaustive small state spaces |
+| `test_deadlock.py` | Corner/line detection on the Figure 5/6 layouts, soundness against dead squares, caching, GUI smoke test |
+| `test_fixes.py` | Regression checks and verification of the 9-entry solver registry |
+
+Run:
+
 ```sh
-python -m unittest discover -s sokoban/tests -v
-```
-
-Additionally, `test_astar.py` verifies A\* optimality (h1 and h3 match BFS cost), re-opening behavior (h2 on Level 3), and `Node.setF` correctness. `test_heuristics.py` exhaustively checks admissibility and consistency on small state spaces.
-
----
-
-## 13. Full Execution Flow — End to End
-
-Here is the complete execution trace when you run `python main.py` (GUI mode) and solve Level 1:
-
-```
-                    ┌──────────────────────┐
-                    │   python main.py     │
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────▼───────────┐
-                    │  sokoban.main.main() │
-                    │  Parse args (no --cli)│
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────▼───────────┐
-                    │  SokobanGUI.__init__ │
-                    │  Load levels 1-5     │
-                    │  from .txt files     │
-                    └──────────┬───────────┘
-                               │
-                   ┌───────────▼───────────┐
-                   │    SokobanGUI.run()   │
-                   │  pygame.init()        │
-                   │  Create window 1180×760│
-                   │  Enter main loop      │
-                   └───────────┬───────────┘
-                               │
-                ┌──────────────▼──────────────┐
-                │      MAIN LOOP (60 FPS)     │
-                │                              │
-                │  1. Process pygame events    │
-                │  2. Check result queue       │
-                │  3. Advance playback if      │
-                │     playing                  │
-                │  4. Draw: controls, board,   │
-                │     info panel               │
-                │  5. pygame.display.flip()    │
-                └──────────────┬──────────────┘
-                               │
-            User presses 'S'   │
-                               │
-                ┌──────────────▼──────────────┐
-                │     _start_solve()           │
-                │  Launch worker thread        │
-                │  thread → bfs(level_state)   │
-                └──────────────┬──────────────┘
-                               │
-                     ┌─────────▼─────────┐
-                     │  WORKER THREAD     │
-                     │                    │
-                     │  bfs(initial):     │
-                     │  1. root = Node()  │
-                     │  2. frontier = [r] │
-                     │  3. explored = {}  │
-                     │  4. LOOP:          │
-                     │     pop → expand   │
-                     │     → check goal   │
-                     │  5. FOUND!         │
-                     │  6. queue.put()    │
-                     └─────────┬─────────┘
-                               │
-                ┌──────────────▼──────────────┐
-                │  Main loop picks up result  │
-                │  result_queue.get()          │
-                │  self.results["BFS"] = res   │
-                │  message = "Solution found." │
-                └──────────────┬──────────────┘
-                               │
-            User presses Space │
-                               │
-                ┌──────────────▼──────────────┐
-                │  PLAYBACK                    │
-                │  self.playing = True         │
-                │  Every delay_ms:             │
-                │    self.step += 1            │
-                │    Draws result.path[step]   │
-                │  Until step == len(path)-1   │
-                │    → auto-pause              │
-                └─────────────────────────────┘
-```
-
-### Detailed BFS trace for Level 1 (4-move solution):
-
-```
-Initial state:              Step 0 (root node)
-  OOOOOOOO
-  OS B   O                  Player at (2,5), Box at (1,3), Target at (1,1)
-  O OO R O
-  O      O
-  ...
-
-BFS explores 11 nodes, generates 35 children.
-
-Solution found: UP → LEFT → LEFT → LEFT
-  Step 1 (UP):    Player moves (2,5) → (1,5)
-  Step 2 (LEFT):  Player moves (1,5) → (1,4)
-  Step 3 (LEFT):  Player pushes box: Player (1,4)→(1,3), Box (1,3)→(1,2)
-  Step 4 (LEFT):  Player pushes box: Player (1,3)→(1,2), Box (1,2)→(1,1) ← ON TARGET!
-
-Final state:
-  OOOOOOOO
-  O*R    O                  Box on target (*) at (1,1), Player at (1,2)
-  O OO   O
-  ...
+python3 -m unittest discover -s sokoban/tests -v
 ```
 
 ---
 
-## 14. Key Concepts Summary
+## 16. Full Execution Flow
 
-### State-Space Search Formulation
-
-| Component | Sokoban Implementation |
-|-----------|----------------------|
-| **State** | `(player_position, box_positions)` on a fixed board |
-| **Initial State** | Loaded from level `.txt` file |
-| **Actions** | `{UP, DOWN, LEFT, RIGHT}` |
-| **Transition Model** | `successorFunction()` — moves player, pushes box if adjacent |
-| **Goal Test** | `isGoal()` — all boxes on all targets |
-| **Path Cost** | Number of moves (each move costs 1) |
-
-### Design Patterns Used
-
-| Pattern | Where |
-|---------|-------|
-| **Flyweight** | `BoardLayout` is shared across all states from the same level |
-| **Immutable State** | `frozenset` for boxes enables hashing and safe set membership |
-| **Producer-Consumer** | Worker thread produces `SearchResult` → main thread consumes via `Queue` |
-| **Strategy** | `SOLVERS` dict registers BFS, A\*(h1), A\*(h2), A\*(h3) — GUI iterates all of them |
-| **Precomputation** | Push distances and dead squares computed once per level, reused by h3 across all states |
-
-### How to Extend — Adding a New Search Algorithm
-
-1. Write a function with signature `(SokobanPuzzle) -> SearchResult` in `search.py`.
-2. Register it in `SokobanGUI.solvers`:
-   ```python
-   self.solvers["A*"] = a_star
-   ```
-3. The GUI automatically displays comparison stats for all registered solvers.
+```text
+                     ┌──────────────────────┐
+                     │   python main.py     │
+                     └──────────┬───────────┘
+                                │
+                     ┌──────────▼───────────┐
+                     │  sokoban.main.main() │
+                     │  Parse CLI arguments │
+                     └───┬──────────┬───────┘
+                         │          │ --cli / --benchmark
+                         │          └──► solve in console / write report
+                         │
+                     ┌───▼──────────────────┐
+                     │  SokobanGUI.__init__ │
+                     │  Load levels 1–7     │   ← parse once per level:
+                     │  Register 9 solvers  │     walls, targets, push distances,
+                     └──────────┬───────────┘     dead squares
+                                │
+                    ┌───────────▼───────────┐
+                    │    SokobanGUI.run()   │
+                    │  pygame.init()        │
+                    └───────────┬───────────┘
+                                │
+                 ┌──────────────▼──────────────┐
+                 │      MAIN LOOP (60 FPS)     │
+                 │  - Poll keyboard / mouse    │
+                 │  - Drain result queue       │
+                 │  - Advance playback timer   │
+                 │  - Draw board (+ overlay)   │
+                 │  - Draw info + comparison   │
+                 └──────────────┬──────────────┘
+                                │
+              User presses 'S'  │
+                                │
+                 ┌──────────────▼──────────────┐
+                 │  _start_solve()             │
+                 │  Spawn background thread    │
+                 └──────────────┬──────────────┘
+                                │
+                      ┌─────────▼──────────┐
+                      │  WORKER THREAD     │
+                      │  astar() / bfs():  │
+                      │  1. root deadlock? │
+                      │  2. pop node       │
+                      │  3. expand         │
+                      │  4. for each child │
+                      │     - duplicate?   │
+                      │     - pushed box   │
+                      │       on dead cell?│
+                      │       → PRUNE      │
+                      │     - else queue   │
+                      │  5. post result    │
+                      └─────────┬──────────┘
+                                │
+                 ┌──────────────▼──────────────┐
+                 │  Main thread reads result   │
+                 │  Caches under key tuple     │
+                 │  Updates metrics and table  │
+                 └──────────────┬──────────────┘
+                                │
+              User presses Space│
+                                │
+                 ┌──────────────▼──────────────┐
+                 │  Step-by-step playback of   │
+                 │  result.path                │
+                 └─────────────────────────────┘
+```
 
 ---
 
-> **Note**: This project uses only the Python standard library + `pygame`. No external AI or search libraries are needed. Both BFS and A\* are implemented from scratch, following the textbook graph-search algorithms. The heuristics (h1, h2, h3) are hand-crafted for the Sokoban domain.
+## 17. Key Concepts Summary
+
+| Concept | Implementation |
+|---|---|
+| **State space** | State = `(player, frozenset(boxes))` over a shared `BoardLayout`. Actions `UP/DOWN/LEFT/RIGHT`, unit cost. |
+| **Immutability and sharing** | `__slots__` states with blocked setattr; one `BoardLayout` per level shared by all states (flyweight). |
+| **BFS** | FIFO queue, goal test at generation, optimal for unit cost. |
+| **A\*** | `f = g + h`, Open/Closed dictionaries, lazy heap replacement, re-opening, goal test at expansion. |
+| **Admissibility / consistency** | `h1` and `h3` admissible and consistent; `h2` neither, so A\*(h2) may be suboptimal. |
+| **Phase 0 cleanup** | `h3` uses a finite Manhattan fallback; the infinity-returning variant is kept as `h3_exact`. |
+| **Corner deadlock** | Non-target floor cell with a wall on a vertical side and a wall on a horizontal side. |
+| **Line deadlock** | Run of non-target floor cells between two corner deadlocks with one full side of wall; interior cells only. |
+| **Combined set + cache** | `(corners ∪ lines) − targets`, computed once per `BoardLayout`, stored in a module-level memo dict. |
+| **Incremental pruning** | After a push, test only the one moved box against the dead set; plain walks skip the check. |
+| **Soundness** | Pruned states have `h* = ∞`, so optimality is preserved; on bundled levels every detected deadlock is inside the exact dead-square set. |
+| **Limitations** | Static only: no freeze (2×2), dynamic, or corral deadlocks. |
+| **Exact dead squares** | Reverse push BFS from targets at parse time; powers `h3_exact`. |
+| **Modularity** | Model, heuristics, deadlocks, search, GUI, and benchmark are separate modules; the only global state is the deadlock memo cache. |

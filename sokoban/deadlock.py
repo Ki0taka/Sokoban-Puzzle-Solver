@@ -26,7 +26,7 @@ def corner_deadlocks(layout: BoardLayout) -> frozenset[Position]:
     - It is in layout.walkable (playable floor cell).
     - It is NOT in layout.targets.
     - It has walls on two perpendicular adjacent sides: at least one of
-      {up, down} is a wall AND at least one of {left, right} is a wall.
+      {up, down} up down means the cell above or below is a wall AND at least one of {left, right} means the cell to the left or right is a wall.
 
     Args:
         layout: The static board layout.
